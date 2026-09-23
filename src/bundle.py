@@ -71,7 +71,7 @@ def _compare(rule, label, claim_value, poa_value, fields, equal):
     if equal:
         return _check(rule, "pass", fields, "", SUPPLEMENT)
     return _check(rule, "fail", fields,
-                  f"{label}이(가) 다릅니다 (청구서 '{claim_value}', 위임장 '{poa_value}')", SUPPLEMENT)
+                  f"{label} 불일치: 청구서 '{claim_value}' / 위임장 '{poa_value}'", SUPPLEMENT)
 
 
 def _cross_check(claim_values, poa):
@@ -82,7 +82,7 @@ def _cross_check(claim_values, poa):
     claim_date = "-".join(c.get(k, "") for k in ["사고_년", "사고_월", "사고_일"]).strip("-")
     poa_date = "-".join(p.get(k, "") for k in ["사고_년", "사고_월", "사고_일"]).strip("-")
     return [
-        _compare("B02", "위임받는 분과 예금주", c.get("예금주", ""), p.get("수임인_성명", ""),
+        _compare("B02", "위임받는 분·예금주", c.get("예금주", ""), p.get("수임인_성명", ""),
                  ["예금주", "수임인_성명"], _same(c.get("예금주", ""), p.get("수임인_성명", ""))),
         _compare("B03", "수령 계좌", claim_account if c.get("계좌번호") else "", poa_account if p.get("수임인_계좌번호") else "",
                  ["은행명", "계좌번호", "수임인_은행명", "수임인_계좌번호"],
@@ -154,7 +154,7 @@ def process_claim(claim, documents, engine="paddle", case_id=None, conn=None, ex
     requirements = required_documents(effective)
     submitted = {entry["classified_type"] or entry["declared_type"] for entry in processed}
     missing = check_completeness(requirements, submitted)
-    completeness = [_check("D01", "fail", [], f"{m['name']}이(가) 없습니다 — {m['reason']} (발급처: {m['issuer']})",
+    completeness = [_check("D01", "fail", [], f"빠진 서류: {m['name']} — {m['reason']} (발급처: {m['issuer']})",
                            SUPPLEMENT) for m in missing]
 
     document_rules = [dict(r, message=f"[{e['classified_type'] or e['declared_type']}] {r['message']}")
