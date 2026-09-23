@@ -80,3 +80,14 @@ def test_check_completeness_accepts_any_alternative():
 def test_issuer_lookup():
     assert issuer_of("인감증명서") == "관공서(주민센터)"
     assert issuer_of("위임장") == "보험회사"
+
+
+def test_document_catalog_covers_every_rule_document():
+    from src.claim_docs import CLAIM_ITEMS, INJURY_CAUSES, document_catalog
+    catalog = set(document_catalog())
+    every = required_documents(claim(type="상해", items=list(CLAIM_ITEMS), injury_cause="교통사고", delegation=True,
+                                     family_check=True, beneficiary_unspecified=True, inpatient_under_50=True))
+    for cause in INJURY_CAUSES:
+        every += required_documents(claim(type="상해", injury_cause=cause))
+    for req in every:
+        assert set(req["any_of"]) <= catalog

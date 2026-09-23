@@ -74,6 +74,17 @@ def _compare(rule, label, claim_value, poa_value, fields, equal):
                   f"{label} 불일치: 청구서 '{claim_value}' / 위임장 '{poa_value}'", SUPPLEMENT)
 
 
+def needs_delegation(claim_values):
+    """청구서 예금주가 피보험자와 다르면 타인 위임이다."""
+    holder, insured = claim_values.get("예금주", ""), claim_values.get("피보험자_성명", "")
+    return bool(holder and insured and not _same(holder, insured))
+
+
+def cross_check(claim_values, poa):
+    """청구서 값과 위임장 값을 대조한다 (B02~B05)."""
+    return _cross_check(claim_values, poa)
+
+
 def _cross_check(claim_values, poa):
     c, p = claim_values, poa
     insured_poa = p.get("위임사항_피보험자") or p.get("피보험자명", "")
@@ -138,7 +149,7 @@ def process_claim(claim, documents, engine="paddle", case_id=None, conn=None, ex
     effective = dict(claim)
     if claim_form and claim_form["form_code"] == "16":
         holder, insured = claim_form["values"].get("예금주", ""), claim_form["values"].get("피보험자_성명", "")
-        if holder and insured and not _same(holder, insured) and not claim["delegation"]:
+        if needs_delegation(claim_form["values"]) and not claim["delegation"]:
             effective["delegation"] = True
             checks.append(_check("B01", "pass", ["예금주", "피보험자_성명"],
                                  f"예금주({holder})와 피보험자({insured})가 달라 위임 서류를 필요 서류에 추가했습니다",

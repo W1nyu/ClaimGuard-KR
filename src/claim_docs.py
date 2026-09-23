@@ -150,3 +150,12 @@ def check_completeness(requirements, submitted):
         if not any(doc in submitted for doc in req["any_of"]):
             missing.append({**req, "issuer": issuer_of(req["any_of"][0])})
     return missing
+
+
+def document_catalog():
+    """고객이 고를 수 있는 서류 종류 전체 (규칙표에 나오는 모든 서류)."""
+    names = list(ISSUERS)
+    names += ["진단서", "입퇴원확인서", "진료확인서", "진료비계산영수증", "진료비세부내역서", "통원확인서", "처방전",
+              "소견서", "진료차트", "수술확인서", "수술기록지", "조직검사결과지", "방사선 판독결과지", "검사결과지",
+              "사망진단서", "시체검안서", "후유장해진단서", "병원 초진차트"]
+    return list(dict.fromkeys(names))
