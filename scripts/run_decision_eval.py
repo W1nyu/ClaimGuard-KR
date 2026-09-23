@@ -6,8 +6,11 @@
   - 엔진 A 값 + 칸 확신도까지 적용한 결과 (실제 운영 방식)
 를 비교한다. 가장 위험한 경우는 '잘못된 자동접수': 정답은 자동접수가 아닌데 시스템이 자동접수한 건.
 
-실행: .venv/Scripts/python -m scripts.run_decision_eval
+실행:
+  .venv/Scripts/python -m scripts.run_decision_eval          # 엔진 A, 청구서 400장
+  .venv/Scripts/python -m scripts.run_decision_eval compare  # 엔진 B가 처리한 100장에서 엔진 A·B
 """
+import sys
 import csv
 import json
 from collections import Counter
@@ -34,9 +37,11 @@ def statuses(results):
     return {r["rule"]: r["status"] for r in results}
 
 
-def evaluate(form_code):
+def evaluate(form_code, engine="paddle", doc_ids=None):
     truth_by_doc = {r["doc_id"]: r["fields"] for r in read_jsonl(GT_DIR / f"val_{form_code}.jsonl")}
-    predictions = read_jsonl(PRED_DIR / f"paddle_val_{form_code}.jsonl")
+    predictions = read_jsonl(PRED_DIR / f"{engine}_val_{form_code}.jsonl")
+    if doc_ids is not None:
+        predictions = [p for p in predictions if p["doc_id"] in doc_ids]
 
     truth_decisions, rule_only, with_conf = Counter(), Counter(), Counter()
     agree_rule_only = agree_with_conf = false_auto = 0
@@ -67,6 +72,7 @@ def evaluate(form_code):
 
     total = len(predictions)
     summary = {
+        "engine": engine,
         "form_code": form_code,
         "documents": total,
         "truth_decisions": dict(truth_decisions),
@@ -77,6 +83,7 @@ def evaluate(form_code):
         "false_auto": false_auto,
     }
     rule_rows = [{
+        "engine": engine,
         "form_code": form_code,
         "rule": rule,
         "documents": rule_seen[rule],
@@ -94,18 +101,25 @@ def write_csv(path, rows):
             writer.writerow({k: json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v for k, v in row.items()})
 
 
-def main():
+def main(mode="paddle"):
     summaries, all_rule_rows = [], []
     for form_code in ["15", "16"]:
-        summary, rule_rows = evaluate(form_code)
-        summaries.append(summary)
-        all_rule_rows.extend(rule_rows)
-        print(summary)
-        for row in rule_rows:
-            print("  ", row)
-    write_csv(RESULTS / "eval_decisions.csv", summaries)
-    write_csv(RESULTS / "eval_rules.csv", all_rule_rows)
+        if mode == "compare":
+            doc_ids = {p["doc_id"] for p in read_jsonl(PRED_DIR / f"claude_val_{form_code}.jsonl")}
+            runs = [("paddle", doc_ids), ("claude", doc_ids)]
+        else:
+            runs = [("paddle", None)]
+        for engine, ids in runs:
+            summary, rule_rows = evaluate(form_code, engine, ids)
+            summaries.append(summary)
+            all_rule_rows.extend(rule_rows)
+            print(summary)
+            for row in rule_rows:
+                print("  ", row)
+    suffix = "_claude" if mode == "compare" else ""
+    write_csv(RESULTS / f"eval_decisions{suffix}.csv", summaries)
+    write_csv(RESULTS / f"eval_rules{suffix}.csv", all_rule_rows)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else "paddle")

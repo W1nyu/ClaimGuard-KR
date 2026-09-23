@@ -3,6 +3,7 @@
 실행:
   .venv/Scripts/python -m scripts.run_eval extract   # 청구서 400장 (약 5분)
   .venv/Scripts/python -m scripts.run_eval classify  # 검증 서류 1,598장
+  .venv/Scripts/python -m scripts.run_eval compare   # 엔진 B가 처리한 100장에서 엔진 A·B 비교
 """
 import csv
 import json
@@ -98,6 +99,50 @@ def run_classify():
             print("오분류:", row)
 
 
+def _read_predictions(engine, form_code):
+    with open(PRED_DIR / f"{engine}_val_{form_code}.jsonl", encoding="utf-8") as f:
+        return {row["doc_id"]: row for row in map(json.loads, f)}
+
+
+def run_compare():
+    """엔진 B가 처리한 서류만 골라 두 엔진을 같은 조건에서 비교한다."""
+    summary_rows, field_rows = [], []
+    for form_code in ["15", "16"]:
+        truth_by_doc = load_ground_truth("val", form_code)
+        claude = _read_predictions("claude", form_code)
+        paddle = _read_predictions("paddle", form_code)
+        doc_ids = sorted(claude)
+        for engine, predictions in [("paddle", paddle), ("claude", claude)]:
+            per_field, seconds = {}, []
+            for doc_id in doc_ids:
+                row = predictions[doc_id]
+                seconds.append(row["seconds"])
+                for name, result in row["fields"].items():
+                    expected = truth_by_doc[doc_id].get(name, "")
+                    per_field.setdefault(name, []).append(
+                        (is_exact(result["value"], expected), cer(result["value"], expected), result["score"]))
+            results = [r for rs in per_field.values() for r in rs]
+            low = [r for r in results if r[2] < HIGH_CONFIDENCE]
+            high = [r for r in results if r[2] >= HIGH_CONFIDENCE]
+            summary_rows.append({
+                "engine": engine,
+                "form_code": form_code,
+                "documents": len(doc_ids),
+                "field_exact_rate": round(sum(r[0] for r in results) / len(results), 3),
+                "mean_cer": round(sum(r[1] for r in results) / len(results), 3),
+                "sec_per_doc": round(sum(seconds) / len(seconds), 2),
+                "low_conf_share": round(len(low) / len(results), 3),
+                "low_conf_exact_rate": round(sum(r[0] for r in low) / len(low), 3) if low else "",
+                "high_conf_exact_rate": round(sum(r[0] for r in high) / len(high), 3) if high else "",
+            })
+            print(summary_rows[-1])
+            for name, rs in per_field.items():
+                field_rows.append({"engine": engine, "form_code": form_code, "field": name,
+                                   "exact_rate": round(sum(r[0] for r in rs) / len(rs), 3)})
+    _write_csv(RESULTS / "eval_engine_compare.csv", summary_rows)
+    _write_csv(RESULTS / "eval_engine_compare_fields.csv", field_rows)
+
+
 def _write_csv(path, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -107,4 +152,4 @@ def _write_csv(path, rows):
 
 
 if __name__ == "__main__":
-    {"extract": run_extract, "classify": run_classify}[sys.argv[1]]()
+    {"extract": run_extract, "classify": run_classify, "compare": run_compare}[sys.argv[1]]()
