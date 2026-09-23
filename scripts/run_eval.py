@@ -55,7 +55,7 @@ def run_extract():
                 for name, result in extracted.items():
                     expected = truth.get(name, "")
                     per_field.setdefault(name, []).append(
-                        (is_exact(result["value"], expected), cer(result["value"], expected), result["score"]))
+                        (is_exact(result["value"], expected, name), cer(result["value"], expected, name), result["score"]))
 
         all_results = [r for results in per_field.values() for r in results]
         high = [r for r in all_results if r[2] >= HIGH_CONFIDENCE]
@@ -120,7 +120,7 @@ def run_compare():
                 for name, result in row["fields"].items():
                     expected = truth_by_doc[doc_id].get(name, "")
                     per_field.setdefault(name, []).append(
-                        (is_exact(result["value"], expected), cer(result["value"], expected), result["score"]))
+                        (is_exact(result["value"], expected, name), cer(result["value"], expected, name), result["score"]))
             results = [r for rs in per_field.values() for r in rs]
             low = [r for r in results if r[2] < HIGH_CONFIDENCE]
             high = [r for r in results if r[2] >= HIGH_CONFIDENCE]
