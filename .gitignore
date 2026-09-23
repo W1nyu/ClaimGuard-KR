@@ -7,3 +7,6 @@ data/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# 참고 기사 원문 (저작권, 링크로만 인용)
+보험 ai 뉴스.txt
