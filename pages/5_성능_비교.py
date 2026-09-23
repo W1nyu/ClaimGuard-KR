@@ -1,4 +1,4 @@
-"""화면 3: 성능 비교 — results/ 폴더의 평가 결과를 보여준다."""
+"""화면 5: 성능 비교 — results/ 폴더의 평가 결과를 보여준다."""
 import csv
 import json
 

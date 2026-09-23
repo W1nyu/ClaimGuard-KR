@@ -1,4 +1,4 @@
-"""화면 1: 서류 접수 — 서류를 고르거나 올리면 분류·추출·검증·결정 결과를 보여준다."""
+"""화면 3: 서류 접수 (단건) — 서류를 고르거나 올리면 분류·추출·검증·결정 결과를 보여준다."""
 from PIL import Image
 import streamlit as st
 
@@ -6,8 +6,9 @@ from src.load_data import FORM_NAMES, list_documents, load_image
 from src.pipeline import ENGINE_NAMES, process_document
 from src.ui_common import decision_badge, draw_fields, fields_table, get_conn, rules_table, save_case_image
 
-st.set_page_config(page_title="서류 접수", layout="wide")
-st.title("서류 접수")
+st.set_page_config(page_title="서류 접수 (단건)", layout="wide")
+st.title("서류 접수 (단건)")
+st.caption("서류 한 장을 처리합니다. 실제 청구는 '청구 접수' 화면에서 서류 묶음으로 처리하세요.")
 
 
 @st.cache_data

@@ -1,4 +1,4 @@
-"""화면 5: 감사 로그 — AI와 담당자의 결정, 값 수정 이력."""
+"""화면 7: 감사 로그 — AI와 담당자의 결정, 값 수정 이력."""
 import streamlit as st
 
 from src.audit import list_decisions, list_edits

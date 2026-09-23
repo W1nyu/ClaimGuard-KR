@@ -1,4 +1,4 @@
-"""화면 4: AI 위험평가 — 금융분야 인공지능 가이드라인(2026.6) 예시 체계로 이 시스템을 평가한다."""
+"""화면 6: AI 위험평가 — 금융분야 인공지능 가이드라인(2026.6) 예시 체계로 이 시스템을 평가한다."""
 import streamlit as st
 
 from src.risk_assessment import ITEMS, IMPLEMENTED, SCENARIOS, assess, report_markdown, required_controls

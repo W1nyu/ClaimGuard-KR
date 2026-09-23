@@ -48,6 +48,20 @@ def save_case_image(case_id, image):
     image.save(CASE_IMAGE_DIR / f"{case_id}.png")
 
 
+def save_bundle_images(case_id, images):
+    """청구 건의 서류 이미지를 순번대로 저장한다 (이미지 없는 서류는 건너뜀)."""
+    CASE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    for index, image in enumerate(images):
+        if image is not None:
+            image.save(CASE_IMAGE_DIR / f"{case_id}_{index}.png")
+
+
+def load_bundle_image(case_id, index):
+    from PIL import Image
+    path = CASE_IMAGE_DIR / f"{case_id}_{index}.png"
+    return Image.open(path).convert("RGB") if path.exists() else None
+
+
 def load_case_image(case_id):
     from PIL import Image
     path = CASE_IMAGE_DIR / f"{case_id}.png"

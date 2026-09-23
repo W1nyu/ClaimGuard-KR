@@ -1,4 +1,4 @@
-"""화면 0: 청구 접수 — 청구 정보와 서류 묶음을 받아 구비서류 완비와 서류 간 대조를 판단한다."""
+"""화면 1: 청구 접수 — 청구 정보와 서류 묶음을 받아 구비서류 완비와 서류 간 대조를 판단한다."""
 from PIL import Image
 import streamlit as st
 
@@ -6,7 +6,7 @@ from src.bundle import process_claim
 from src.claim_docs import CLAIM_ITEMS, INJURY_CAUSES, check_completeness, document_catalog, required_documents
 from src.load_data import list_documents, load_image
 from src.pipeline import ENGINE_NAMES
-from src.ui_common import STATUS_LABELS, decision_badge, draw_fields, get_conn, rules_table
+from src.ui_common import STATUS_LABELS, decision_badge, draw_fields, get_conn, rules_table, save_bundle_images
 
 st.set_page_config(page_title="청구 접수", layout="wide")
 st.title("청구 접수")
@@ -16,7 +16,9 @@ st.caption("장기보험(질병·상해) 청구 한 건을 서류 묶음으로 �
 
 @st.cache_data
 def sample_documents():
-    claims = {d["doc_id"]: d for d in list_documents("val", ["2-5.청구서"])}
+    # 신양식(16)을 먼저 보여준다: 예금주 칸이 있어 위임 판단과 위임장 대조가 가능하다 (구양식 15는 불가)
+    ordered = sorted(list_documents("val", ["2-5.청구서"]), key=lambda d: (d["form_code"] != "16", d["doc_id"]))
+    claims = {f"{d['doc_id']} · {'신양식' if d['form_code'] == '16' else '구양식(위임 판단 불가)'}": d for d in ordered}
     powers = {d["doc_id"]: d for d in list_documents("val", ["2-3.위임장"])}
     return claims, powers
 
@@ -77,12 +79,14 @@ if st.button("청구 접수", type="primary"):
     with st.spinner("서류를 판별하고 읽는 중..."):
         st.session_state["bundle"] = process_claim(claim, documents, engine=engine, conn=get_conn())
         st.session_state["bundle_images"] = [d["image"] for d in documents]
+        # 담당자 검토 화면에서 원본을 보여주려고 이미지를 저장한다
+        save_bundle_images(st.session_state["bundle"]["case_id"], st.session_state["bundle_images"])
 
 bundle = st.session_state.get("bundle")
 if bundle:
     st.divider()
     st.subheader(f"결정: {decision_badge(bundle['decision'])}")
-    st.caption(f"건 ID {bundle['case_id']}")
+    st.caption(f"건 ID {bundle['case_id']}" + (" — '청구 검토' 화면에서 담당자가 확인합니다" if bundle["status"] == "검토대기" else ""))
     submitted = {d["classified_type"] or d["declared_type"] for d in bundle["documents"]}
     st.markdown("**구비서류 체크리스트**")
     st.dataframe([{

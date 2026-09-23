@@ -1,4 +1,4 @@
-"""화면 2: 검토 대기함 — 담당자가 값을 확인·수정하고 최종 처리를 확정한다."""
+"""화면 4: 서류 검토 (단건) — 담당자가 값을 확인·수정하고 최종 처리를 확정한다."""
 import streamlit as st
 
 from src.audit import get_case, list_cases
@@ -6,8 +6,8 @@ from src.load_data import FORM_NAMES
 from src.pipeline import approve, apply_edits
 from src.ui_common import decision_badge, draw_fields, get_conn, load_case_image, rules_table
 
-st.set_page_config(page_title="검토 대기함", layout="wide")
-st.title("검토 대기함")
+st.set_page_config(page_title="서류 검토 (단건)", layout="wide")
+st.title("서류 검토 (단건)")
 
 conn = get_conn()
 waiting = list_cases(conn, status="검토대기")
