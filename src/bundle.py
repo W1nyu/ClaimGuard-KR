@@ -14,20 +14,26 @@
   B05 위임장 사고일 = 청구서 사고일            → 불일치 시 담당자검토
   B06 고객이 고른 서류 종류 ≠ 판별된 양식       → 담당자검토
   B07 상해 사고확인서류 발급불가인데 사고경위가 비어 있음 → 보완요청
+
+처리는 두 단계로 나눈다.
+  1) read_documents: 이미지 서류를 분류·추출한다 (OCR은 여기서 한 번만).
+  2) evaluate_claim: 저장된 값으로 규칙·대조·완비·결정을 계산한다.
+담당자가 값을 고치거나 판단을 내리면(review_claim) OCR 없이 2)만 다시 돌린다.
 """
 import re
 import uuid
 
-from src.audit import log_decision, save_claim
+from src.audit import get_claim, log_decision, log_edit, save_claim
 from src.claim_docs import check_completeness, required_documents
 from src.load_data import FORM_NAMES
-from src.pipeline import _default_classifier, _default_extractors, process_document
+from src.pipeline import _default_classifier, _default_extractors
 from src.reference import normalize_name
 from src.route import CONFIDENCE_THRESHOLD, REVIEW_DECISION, decide
-from src.validate import DOCUMENT, REVIEW, SUPPLEMENT
+from src.validate import DOCUMENT, REVIEW, SUPPLEMENT, validate
 
 # 판별된 양식 코드 → 구비서류 규칙표의 서류 이름
 FORM_DOC_TYPE = {"15": "보험금청구서", "16": "보험금청구서", "12": "위임장"}
+EMPTY_REVIEW = {"delegation": None, "confirmed_mismatches": []}
 
 
 def _check(rule, status, fields, message, action, detail=None):
@@ -85,10 +91,6 @@ def needs_delegation(claim_values):
 
 def cross_check(claim_values, poa):
     """청구서 값과 위임장 값을 대조한다 (B02~B05)."""
-    return _cross_check(claim_values, poa)
-
-
-def _cross_check(claim_values, poa):
     c, p = claim_values, poa
     insured_poa = p.get("위임사항_피보험자") or p.get("피보험자명", "")
     claim_account = f"{c.get('은행명', '')} {c.get('계좌번호', '')}".strip()
@@ -110,62 +112,88 @@ def _cross_check(claim_values, poa):
     ]
 
 
-def process_claim(claim, documents, engine="paddle", case_id=None, conn=None, extractors=None, classifier=None,
-                  today=None, refs=None):
-    """claim: claim_docs.required_documents가 받는 청구 정보. documents: [{"declared_type", "image"(없으면 None)}]"""
+def read_documents(documents, engine="paddle", extractors=None, classifier=None):
+    """1단계: 서류마다 양식을 판별하고, 청구서·위임장은 칸 값을 읽는다."""
     extractors = extractors or _default_extractors()
     classifier = classifier or _default_classifier
-    case_id = case_id or uuid.uuid4().hex[:12]
-
-    processed, checks, merged_extracted = [], [], {}
-    claim_form, poa = None, None
-    for index, doc in enumerate(documents):
+    entries = []
+    for doc in documents:
         entry = {"declared_type": doc["declared_type"], "classified_type": None, "form_code": None,
                  "engine": None, "engine_note": "", "extracted": {}, "values": {}, "rules": []}
         if doc.get("image") is not None:
             form_code, _ = classifier(doc["image"])
             entry["form_code"] = form_code
             entry["classified_type"] = _doc_type(form_code)
-            if form_code in ("15", "16"):
-                single = process_document(doc["image"], engine=engine, extractors=extractors,
-                                          classifier=lambda image, code=form_code: (code, 0.0), today=today, refs=refs)
-                entry.update({k: single[k] for k in ["engine", "engine_note", "extracted", "values", "rules"]})
-                # 예금주 ≠ 피보험자(R11)는 건 단위에서 위임 서류 완비로 판단한다
-                entry["rules"] = [r for r in entry["rules"] if r["rule"] != "R11"]
-                claim_form = claim_form or entry
-            elif form_code == "12":
-                extracted, used, note = _extract(doc["image"], "12", engine, extractors)
+            if form_code in ("12", "15", "16"):
+                extracted, used, note = _extract(doc["image"], form_code, engine, extractors)
                 entry.update({"engine": used, "engine_note": note, "extracted": extracted,
                               "values": {k: v["value"] for k, v in extracted.items()}})
-                poa = poa or entry
-            if entry["classified_type"] and entry["classified_type"] != doc["declared_type"]:
-                checks.append(_check("B06", "fail", [],
-                                     f"'{doc['declared_type']}'(으)로 올린 서류가 '{entry['classified_type']}'(으)로 판별됐습니다",
-                                     REVIEW))
-        label = entry["classified_type"] or entry["declared_type"]
-        for name, field in entry["extracted"].items():
-            merged_extracted[f"{label}:{name}" if f"{label}:{name}" not in merged_extracted
-                             else f"{label}#{index + 1}:{name}"] = field
-        processed.append(entry)
+        entries.append(entry)
+    return entries
 
-    # 청구서 내용으로 청구 정보를 보강한다
+
+def _label(entry):
+    return entry["classified_type"] or entry["declared_type"]
+
+
+def _first(entries, codes):
+    return next((e for e in entries if e["form_code"] in codes), None)
+
+
+def _delegation_check(claim, claim_form, review, effective, checks):
+    """위임 필요 여부: 담당자 판단이 있으면 그것을, 없으면 청구서 값(이름 확신도 조건부)으로 정한다."""
+    if review["delegation"] is not None:
+        effective["delegation"] = review["delegation"]
+        checks.append(_check("B01", "pass", ["예금주", "피보험자_성명"],
+                             f"담당자 판단: 위임 {'필요' if review['delegation'] else '불필요'}", DOCUMENT))
+        return
+    if not claim_form or claim_form["form_code"] != "16":
+        return
+    if not needs_delegation(claim_form["values"]) or claim["delegation"]:
+        return
+    holder, insured = claim_form["values"].get("예금주", ""), claim_form["values"].get("피보험자_성명", "")
+    scores = [claim_form["extracted"].get(f, {}).get("score", 0) for f in ["예금주", "피보험자_성명"]]
+    if min(scores) >= CONFIDENCE_THRESHOLD:
+        effective["delegation"] = True
+        checks.append(_check("B01", "pass", ["예금주", "피보험자_성명"],
+                             f"예금주({holder})와 피보험자({insured})가 달라 위임 서류를 필요 서류에 추가했습니다", DOCUMENT))
+    else:
+        # 이름을 잘못 읽어 달라 보일 수 있다 → 고객에게 불필요한 위임 서류를 요구하지 않도록 담당자가 확인
+        checks.append(_check("B01", "unknown", ["예금주", "피보험자_성명"],
+                             f"예금주({holder})와 피보험자({insured})가 달라 보이지만 이름 확신도가 낮아 위임 여부 확인 필요",
+                             REVIEW))
+
+
+def evaluate_claim(claim, entries, case_id, engine="paddle", today=None, refs=None, review=None):
+    """2단계: 저장된 서류 값으로 건 단위 판단을 계산한다.
+
+    review(담당자 판단): {"delegation": None/True/False, "confirmed_mismatches": [규칙 ID]}
+    """
+    review = review or dict(EMPTY_REVIEW)
+    checks, merged_extracted = [], {}
+    for index, entry in enumerate(entries):
+        if entry["form_code"] in ("15", "16"):
+            # 청구서 단건 규칙. 예금주 ≠ 피보험자(R11)는 건 단위에서 위임 서류 완비로 판단한다
+            entry["rules"] = [r for r in validate(entry["form_code"], entry["values"], today=today, refs=refs)
+                              if r["rule"] != "R11"]
+        if entry["classified_type"] and entry["classified_type"] != entry["declared_type"]:
+            checks.append(_check("B06", "fail", [],
+                                 f"'{entry['declared_type']}'(으)로 올린 서류가 '{entry['classified_type']}'(으)로 판별됐습니다",
+                                 REVIEW))
+        for name, field in entry["extracted"].items():
+            key = f"{_label(entry)}:{name}"
+            merged_extracted[key if key not in merged_extracted else f"{_label(entry)}#{index + 1}:{name}"] = field
+
+    claim_form, poa = _first(entries, ("15", "16")), _first(entries, ("12",))
     effective = dict(claim)
-    if claim_form and claim_form["form_code"] == "16":
-        holder, insured = claim_form["values"].get("예금주", ""), claim_form["values"].get("피보험자_성명", "")
-        if needs_delegation(claim_form["values"]) and not claim["delegation"]:
-            scores = [claim_form["extracted"].get(f, {}).get("score", 0) for f in ["예금주", "피보험자_성명"]]
-            if min(scores) >= CONFIDENCE_THRESHOLD:
-                effective["delegation"] = True
-                checks.append(_check("B01", "pass", ["예금주", "피보험자_성명"],
-                                     f"예금주({holder})와 피보험자({insured})가 달라 위임 서류를 필요 서류에 추가했습니다",
-                                     DOCUMENT))
-            else:
-                # 이름을 잘못 읽어 달라 보일 수 있다 → 고객에게 불필요한 위임 서류를 요구하지 않도록 담당자가 확인
-                checks.append(_check("B01", "unknown", ["예금주", "피보험자_성명"],
-                                     f"예금주({holder})와 피보험자({insured})가 달라 보이지만 이름 확신도가 낮아 "
-                                     "위임 여부 확인 필요", REVIEW))
-        if poa:
-            checks += _cross_check(claim_form["values"], poa["values"])
+    _delegation_check(claim, claim_form, review, effective, checks)
+    if claim_form and claim_form["form_code"] == "16" and poa:
+        for check in cross_check(claim_form["values"], poa["values"]):
+            if check["status"] == "fail" and check["rule"] in review["confirmed_mismatches"]:
+                # 담당자가 원본으로 실제 불일치를 확인했으면 고객에게 보완을 요청한다
+                check = dict(check, action=SUPPLEMENT,
+                             message=check["message"].replace(" — 담당자 원본 확인 필요", " — 서류를 다시 확인해 주세요"))
+            checks.append(check)
     if claim["type"] == "상해" and claim.get("injury_cause") == "발급불가" and claim_form:
         described = bool(claim_form["values"].get("사고경위"))
         checks.append(_check("B07", "pass" if described else "fail", ["사고경위"],
@@ -173,22 +201,71 @@ def process_claim(claim, documents, engine="paddle", case_id=None, conn=None, ex
                              SUPPLEMENT))
 
     requirements = required_documents(effective)
-    submitted = {entry["classified_type"] or entry["declared_type"] for entry in processed}
-    missing = check_completeness(requirements, submitted)
+    missing = check_completeness(requirements, {_label(e) for e in entries})
     completeness = [_check("D01", "fail", [], f"빠진 서류: {m['name']} — {m['reason']} (발급처: {m['issuer']})",
                            SUPPLEMENT) for m in missing]
-
-    document_rules = [dict(r, message=f"[{e['classified_type'] or e['declared_type']}] {r['message']}")
-                      for e in processed for r in e["rules"]]
-    all_rules = completeness + checks + document_rules
-    result = decide(all_rules, extracted=merged_extracted)
-
-    bundle = {
-        "case_id": case_id, "engine": engine, "claim": claim, "effective_claim": effective, "documents": processed,
-        "requirements": requirements, "missing": missing, "checks": checks, **result,
+    document_rules = [dict(r, message=f"[{_label(e)}] {r['message']}") for e in entries for r in e["rules"]]
+    result = decide(completeness + checks + document_rules, extracted=merged_extracted)
+    return {
+        "case_id": case_id, "engine": engine, "claim": claim, "effective_claim": effective, "documents": entries,
+        "requirements": requirements, "missing": missing, "checks": checks, "review": review, **result,
         "status": "검토대기" if result["decision"] == REVIEW_DECISION else "처리완료",
     }
+
+
+def process_claim(claim, documents, engine="paddle", case_id=None, conn=None, extractors=None, classifier=None,
+                  today=None, refs=None):
+    """claim: claim_docs.required_documents가 받는 청구 정보. documents: [{"declared_type", "image"(없으면 None)}]"""
+    case_id = case_id or uuid.uuid4().hex[:12]
+    entries = read_documents(documents, engine, extractors, classifier)
+    bundle = evaluate_claim(claim, entries, case_id, engine, today, refs)
     if conn is not None:
         save_claim(conn, bundle)
-        log_decision(conn, case_id, "AI", engine, result["decision"], result["reasons"])
+        log_decision(conn, case_id, "AI", engine, bundle["decision"], bundle["reasons"])
+    return bundle
+
+
+def review_claim(conn, case_id, editor, edits=None, confirmed_fields=None, confirmed_mismatches=None, delegation=None,
+                 today=None, refs=None):
+    """담당자 검토를 반영하고 OCR 없이 다시 판단한다.
+
+    edits: {서류 순번: {칸: 새 값}} — 고친 칸은 이력을 남기고 확신도 1.0
+    confirmed_fields: {서류 순번: [칸]} — 값은 그대로 두고 원본과 맞다고 확인한 칸 (확신도 1.0)
+    confirmed_mismatches: 원본으로 실제 불일치를 확인한 대조 규칙 ID (고객 보완요청으로 바뀜)
+    delegation: 위임 필요 여부에 대한 담당자 판단 (None이면 이전 판단 유지, 처음이면 청구서 값으로 자동 판단)
+    """
+    bundle = get_claim(conn, case_id)
+    entries = bundle["documents"]
+    for index, changes in (edits or {}).items():
+        entry = entries[int(index)]
+        for field, new in changes.items():
+            old = entry["values"].get(field, "")
+            if new != old:
+                log_edit(conn, case_id, f"{_label(entry)}:{field}", old, new, editor)
+            entry["values"][field] = new
+            entry["extracted"][field] = {"value": new, "raw": entry["extracted"].get(field, {}).get("raw", ""),
+                                         "score": 1.0}
+    for index, fields in (confirmed_fields or {}).items():
+        entry = entries[int(index)]
+        for field in fields:
+            if field in entry["extracted"]:
+                entry["extracted"][field]["score"] = 1.0
+    review = dict(bundle.get("review") or EMPTY_REVIEW)
+    review["confirmed_mismatches"] = sorted(set(review["confirmed_mismatches"]) | set(confirmed_mismatches or []))
+    if delegation is not None:
+        review["delegation"] = delegation
+    updated = evaluate_claim(bundle["claim"], entries, case_id, bundle["engine"], today, refs, review)
+    updated["created_at"] = bundle.get("created_at")
+    save_claim(conn, updated)
+    log_decision(conn, case_id, f"{editor}(검토 후 재판단)", bundle["engine"], updated["decision"], updated["reasons"])
+    return updated
+
+
+def finalize_claim(conn, case_id, editor, final_decision):
+    """담당자가 최종 처리(예: '접수', '보완요청')를 확정하고 건을 닫는다."""
+    bundle = get_claim(conn, case_id)
+    bundle["status"] = "검토완료"
+    bundle["final_decision"] = final_decision
+    save_claim(conn, bundle)
+    log_decision(conn, case_id, editor, bundle["engine"], final_decision, ["담당자 최종 확인"])
     return bundle

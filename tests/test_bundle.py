@@ -143,3 +143,84 @@ def test_low_confidence_names_do_not_auto_add_delegation_documents():
     assert result["effective_claim"]["delegation"] is False
     assert "위임장" not in [m["name"] for m in result["missing"]]
     assert result["decision"] == REVIEW_DECISION
+
+
+# ── 담당자 검토 ─────────────────────────────────────────────
+from src.audit import get_claim, list_claims, list_edits  # noqa: E402
+from src.bundle import finalize_claim, review_claim  # noqa: E402
+
+
+def mismatch_case(conn):
+    docs = ([{"declared_type": "보험금청구서", "image": image("16")}, {"declared_type": "위임장", "image": image("12")}]
+            + OUTPATIENT_DOCS
+            + [{"declared_type": t, "image": None} for t in ["청구권자 개인(신용)정보처리동의서", "인감증명서"]])
+    return run(docs, conn=conn, extractors=fake_extractors(
+        claim_overrides={"예금주": "김철수", "계좌번호": "110-999-000000"}, poa_overrides={"수임인_성명": "김철슈"}))
+
+
+def review(conn, **kwargs):
+    return review_claim(conn, "B1", editor="담당자A", today=TODAY, refs=PASS_REFS, **kwargs)
+
+
+def test_reviewer_fixes_ocr_misread_and_claim_becomes_auto(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    first = mismatch_case(conn)
+    assert first["decision"] == REVIEW_DECISION
+    assert [c["case_id"] for c in list_claims(conn, status="검토대기")] == ["B1"]
+    # 위임장은 문서 목록의 두 번째(인덱스 1)
+    result = review(conn, edits={1: {"수임인_성명": "김철수"}})
+    assert {c["rule"]: c["status"] for c in result["checks"]}["B02"] == "pass"
+    assert result["decision"] == AUTO
+    edit = list_edits(conn, "B1")[0]
+    assert (edit["field"], edit["old"], edit["new"]) == ("위임장:수임인_성명", "김철슈", "김철수")
+    assert get_claim(conn, "B1")["decision"] == AUTO
+
+
+def test_reviewer_confirms_real_mismatch_goes_to_customer(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    mismatch_case(conn)
+    result = review(conn, confirmed_mismatches=["B02"])
+    b02 = {c["rule"]: c for c in result["checks"]}["B02"]
+    assert b02["status"] == "fail" and b02["action"] == "보완요청"
+    assert result["decision"] == SUPPLEMENT_DECISION
+    assert "김철슈" in result["customer_message"]
+
+
+def test_reviewer_decides_delegation(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    docs = [{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS
+    run(docs, conn=conn, extractors=fake_extractors(claim_overrides={"예금주": "김철수"}, low=("예금주",)))
+    not_needed = review(conn, delegation=False, confirmed_fields={0: ["예금주"]})
+    assert "위임장" not in [m["name"] for m in not_needed["missing"]]
+    assert not_needed["decision"] == AUTO
+    needed = review(conn, delegation=True)
+    assert "위임장" in [m["name"] for m in needed["missing"]]
+    assert needed["decision"] == SUPPLEMENT_DECISION
+
+
+def test_confirmed_low_confidence_fields_stop_blocking(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    docs = [{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS
+    run(docs, conn=conn, extractors=fake_extractors(low=("진단명",)))
+    result = review(conn, confirmed_fields={0: ["진단명"]})
+    assert result["low_confidence_fields"] == []
+    assert result["decision"] == AUTO
+    assert list_edits(conn, "B1") == []
+
+
+def test_reviewer_edit_rechecks_claim_form_rules(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    docs = [{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS
+    run(docs, conn=conn, extractors=fake_extractors(claim_overrides={"연락처": "524-7951-4101"}))
+    assert "R06" in " ".join(get_claim(conn, "B1")["reasons"])
+    result = review(conn, edits={0: {"연락처": "010-7951-4101"}})
+    assert result["decision"] == AUTO
+
+
+def test_finalize_closes_claim_and_logs(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    mismatch_case(conn)
+    closed = finalize_claim(conn, "B1", editor="담당자A", final_decision="보완요청")
+    assert closed["status"] == "검토완료"
+    assert list_claims(conn, status="검토대기") == []
+    assert list_decisions(conn, "B1")[-1]["decision"] == "보완요청"
