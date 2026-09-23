@@ -1,0 +1,9 @@
+# 비밀 키
+.env
+# 원본·가공 데이터 (용량·라이선스)
+data/
+# 파이썬
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
