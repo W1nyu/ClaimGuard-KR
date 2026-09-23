@@ -26,6 +26,7 @@ DB손해보험 양식 보험 서류(AI Hub 공개 데이터, 값은 가상)를 �
   → 접수 검증      규칙 R01~R11 + 기준 데이터(KCD-9, KSCO 8차, 금융회사코드, 도로명주소 API)
   → 처리 결정      자동접수 / 보완요청(고객 안내문 자동 작성) / 담당자검토
   → 감사 로그      AI 결정·담당자 수정·최종 확정을 SQLite에 기록
+청구 건 단위       청구 정보 + 서류 묶음 → DB손보 필요서류 안내 기준 구비서류 완비 판단, 청구서·위임장 대조
 AI 위험평가        가이드라인 예시표(16개 항목, 100점)로 두 엔진 시나리오 평가
 ```
 
@@ -41,6 +42,26 @@ AI 위험평가        가이드라인 예시표(16개 항목, 100점)로 두 �
 | R09 | 직업 → KSCO 8차 직업코드 | 담당자검토 |
 | R10 | 은행명(금융회사코드)·계좌 자릿수 | 보완요청 |
 | R11 | 예금주 ≠ 피보험자 → 위임장·인감증명서 | 추가서류 |
+
+## 청구 건 단위 처리
+
+실제 청구는 서류 한 장이 아니라 **청구서 + 동의서 + 신분증 + 의료기관 서류 (+ 위임장)** 묶음으로 들어온다.
+DB손해보험 홈페이지의 [질병](https://www.idbins.com/pc/bizxpress/ct/dc/FWCUSV1301.shtm)·[상해](https://www.idbins.com/pc/bizxpress/ct/dc/FWCUSV1300.shtm) 보험금청구서류 안내(2026.9.23 확인)를 규칙표(`src/claim_docs.py`)로 옮겨, 청구 정보(유형·항목·조건)로 필요 서류를 만들고 빠진 서류를 **발급처와 함께** 안내한다.
+
+- 50만원 이하 입원은 진단서 대신 입퇴원확인서·진료확인서 인정, 비급여·도수치료는 진료비세부내역서 필수, 상해는 사고 원인별 입증서류(교통사고 사고사실확인서, 산재 요양급여신청서 등)
+- 청구서의 **예금주 ≠ 피보험자**이면 위임장·청구권자 동의서·인감증명서를 자동으로 필요 서류에 추가
+- 같은 건에 위임장이 있으면 **수임인 = 예금주, 수령 계좌, 피보험자, 사고일**을 대조 (B02~B05)
+- 청구 화면에서 **제출 전에** 빠진 서류를 미리 보여준다
+- 의료기관·관공서 서류는 공개 데이터에 이미지가 없어 서류 종류만 받고 내용은 읽지 않는다
+
+**평가에서 드러난 설계 문제와 보정** (`results/eval_bundle.csv`)
+
+| | 보정 전 | 보정 후 |
+|---|---|---|
+| 서류 간 대조 | 내용이 일치하는 쌍에서도 OCR 오류로 **24~58%가 거짓 불일치** → 고객에게 잘못된 보완요청 | 불일치는 **담당자 원본 확인**으로 (고객에게 바로 가는 거짓 불일치 0건) |
+| 위임 서류 자동 요구 | 예금주 = 피보험자인 14건 **모두** 이름 오인식으로 위임 서류 요구 | 이름 확신도가 높을 때만 자동 추가 → **14건 중 7건**, 191건 중 82건은 담당자 확인 |
+
+로컬 OCR(위임장 칸 일치율 67.8%)로는 서류 간 자동 대조를 고객 응대에 직접 쓸 수 없다는 것을 수치로 확인하고, 사람 확인 단계로 돌렸다.
 
 ## 결과
 
@@ -101,7 +122,8 @@ py -3.10 -m venv .venv
 .venv/Scripts/python -m scripts.run_claude_batch        # 엔진 B 100장 (claude CLI 필요)
 .venv/Scripts/python -m scripts.run_eval compare        # 엔진 비교
 .venv/Scripts/python -m scripts.run_decision_eval compare
-.venv/Scripts/python -m pytest                          # 테스트 85개
+.venv/Scripts/python -m scripts.run_bundle_eval         # 청구 건 평가
+.venv/Scripts/python -m pytest                          # 테스트 110개
 .venv/Scripts/streamlit run app.py                      # 화면
 ```
 
@@ -109,6 +131,7 @@ py -3.10 -m venv .venv
 
 | 화면 | 내용 |
 |---|---|
+| 청구 접수 | 청구 정보 + 서류 묶음 → 제출 전 점검, 구비서류 체크리스트, 청구서·위임장 대조, 건 단위 결정 |
 | 서류 접수 | 서류 선택·업로드 → 엔진 선택 → 결정·사유·고객 안내문·칸별 확신도 |
 | 검토 대기함 | 확신 낮은 칸부터 값 수정 → 재검증 → 최종 처리 확정 |
 | 성능 비교 | 평가 결과 표·그래프 |
@@ -119,9 +142,10 @@ py -3.10 -m venv .venv
 
 ```
 src/        load_data, form_templates, classify, extract_paddle, extract_claude,
-            reference, validate, route, audit, pipeline, risk_assessment, metrics
+            reference, validate, route, audit, pipeline, risk_assessment, metrics,
+            claim_docs(구비서류 규칙표), bundle(청구 건 처리)
 scripts/    정답 생성·분류기·평가 스크립트
-config/     양식별 칸 위치 (form_fields_15/16.json)
+config/     양식별 칸 위치 (form_fields_12/15/16.json)
 pages/      Streamlit 화면
 results/    평가 결과 CSV
 docs/       설계서, 주차별 구현 계획, 포트폴리오 문서
