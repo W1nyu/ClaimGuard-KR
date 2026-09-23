@@ -15,6 +15,9 @@
   B06 고객이 고른 서류 종류 ≠ 판별된 양식       → 담당자검토
   B07 상해 사고확인서류 발급불가인데 사고경위가 비어 있음 → 보완요청
 
+상태: 자동접수 → 접수완료, 보완요청 → 보완대기(고객 재제출 대기), 담당자검토 → 검토대기.
+보완대기 건에 고객이 서류를 더 내면(resubmit_claim) 같은 건에 붙여 다시 판단하고 회차별로 기록한다.
+
 처리는 두 단계로 나눈다.
   1) read_documents: 이미지 서류를 분류·추출한다 (OCR은 여기서 한 번만).
   2) evaluate_claim: 저장된 값으로 규칙·대조·완비·결정을 계산한다.
@@ -22,18 +25,24 @@
 """
 import re
 import uuid
+from datetime import datetime
 
 from src.audit import get_claim, log_decision, log_edit, save_claim
 from src.claim_docs import check_completeness, required_documents
 from src.load_data import FORM_NAMES
 from src.pipeline import _default_classifier, _default_extractors
 from src.reference import normalize_name
-from src.route import CONFIDENCE_THRESHOLD, REVIEW_DECISION, decide
+from src.route import AUTO, CONFIDENCE_THRESHOLD, REVIEW_DECISION, SUPPLEMENT_DECISION, decide
 from src.validate import DOCUMENT, REVIEW, SUPPLEMENT, validate
 
 # 판별된 양식 코드 → 구비서류 규칙표의 서류 이름
 FORM_DOC_TYPE = {"15": "보험금청구서", "16": "보험금청구서", "12": "위임장"}
 EMPTY_REVIEW = {"delegation": None, "confirmed_mismatches": []}
+STATUS_BY_DECISION = {AUTO: "접수완료", SUPPLEMENT_DECISION: "보완대기", REVIEW_DECISION: "검토대기"}
+# 담당자 최종 처리 → 상태
+STATUS_BY_FINAL = {"접수": "접수완료", "보완요청": "보완대기"}
+# 다시 내면 이전 것을 대신하는 서류 (이미지로 읽는 양식)
+REPLACEABLE = {"보험금청구서", "위임장"}
 
 
 def _check(rule, status, fields, message, action, detail=None):
@@ -119,8 +128,10 @@ def read_documents(documents, engine="paddle", extractors=None, classifier=None)
     entries = []
     for doc in documents:
         entry = {"declared_type": doc["declared_type"], "classified_type": None, "form_code": None,
-                 "engine": None, "engine_note": "", "extracted": {}, "values": {}, "rules": []}
+                 "engine": None, "engine_note": "", "extracted": {}, "values": {}, "rules": [], "image_id": None}
         if doc.get("image") is not None:
+            # 원본 이미지를 담당자 화면에서 다시 보여주기 위한 ID (서류 순서가 바뀌어도 안 섞이게)
+            entry["image_id"] = uuid.uuid4().hex[:12]
             form_code, _ = classifier(doc["image"])
             entry["form_code"] = form_code
             entry["classified_type"] = _doc_type(form_code)
@@ -209,7 +220,18 @@ def evaluate_claim(claim, entries, case_id, engine="paddle", today=None, refs=No
     return {
         "case_id": case_id, "engine": engine, "claim": claim, "effective_claim": effective, "documents": entries,
         "requirements": requirements, "missing": missing, "checks": checks, "review": review, **result,
-        "status": "검토대기" if result["decision"] == REVIEW_DECISION else "처리완료",
+        "status": STATUS_BY_DECISION[result["decision"]],
+    }
+
+
+def _round(number, submitted, bundle, previous_missing=None):
+    """접수 회차 기록: 이번에 낸 서류, 결정, 해결된 누락 서류, 아직 빠진 서류."""
+    still = [m["name"] for m in bundle["missing"]]
+    return {
+        "round": number, "at": datetime.now().isoformat(timespec="seconds"), "submitted": submitted,
+        "decision": bundle["decision"],
+        "resolved": [name for name in (previous_missing or []) if name not in still],
+        "still_missing": still,
     }
 
 
@@ -219,6 +241,7 @@ def process_claim(claim, documents, engine="paddle", case_id=None, conn=None, ex
     case_id = case_id or uuid.uuid4().hex[:12]
     entries = read_documents(documents, engine, extractors, classifier)
     bundle = evaluate_claim(claim, entries, case_id, engine, today, refs)
+    bundle["rounds"] = [_round(1, [_label(e) for e in entries], bundle)]
     if conn is not None:
         save_claim(conn, bundle)
         log_decision(conn, case_id, "AI", engine, bundle["decision"], bundle["reasons"])
@@ -256,6 +279,7 @@ def review_claim(conn, case_id, editor, edits=None, confirmed_fields=None, confi
         review["delegation"] = delegation
     updated = evaluate_claim(bundle["claim"], entries, case_id, bundle["engine"], today, refs, review)
     updated["created_at"] = bundle.get("created_at")
+    updated["rounds"] = bundle.get("rounds", [])
     save_claim(conn, updated)
     log_decision(conn, case_id, f"{editor}(검토 후 재판단)", bundle["engine"], updated["decision"], updated["reasons"])
     return updated
@@ -264,8 +288,34 @@ def review_claim(conn, case_id, editor, edits=None, confirmed_fields=None, confi
 def finalize_claim(conn, case_id, editor, final_decision):
     """담당자가 최종 처리(예: '접수', '보완요청')를 확정하고 건을 닫는다."""
     bundle = get_claim(conn, case_id)
-    bundle["status"] = "검토완료"
+    bundle["status"] = STATUS_BY_FINAL[final_decision]
     bundle["final_decision"] = final_decision
     save_claim(conn, bundle)
     log_decision(conn, case_id, editor, bundle["engine"], final_decision, ["담당자 최종 확인"])
     return bundle
+
+
+def resubmit_claim(conn, case_id, documents, engine=None, extractors=None, classifier=None, today=None, refs=None):
+    """보완대기 건에 고객이 추가로 낸 서류를 붙여 다시 판단한다.
+
+    새로 낸 청구서·위임장은 이전 것을 대신한다(고쳐서 다시 낸 경우). 이때 이전 서류 값으로 한
+    담당자의 불일치 확정은 무효가 된다. 위임 여부 판단은 그대로 둔다.
+    """
+    bundle = get_claim(conn, case_id)
+    if bundle["status"] != "보완대기":
+        raise ValueError(f"보완대기 상태인 건만 재제출할 수 있습니다 (현재: {bundle['status']})")
+    engine = engine or bundle["engine"]
+    new_entries = read_documents(documents, engine, extractors, classifier)
+    replaced = {_label(e) for e in new_entries if _label(e) in REPLACEABLE}
+    entries = [e for e in bundle["documents"] if _label(e) not in replaced] + new_entries
+    review = dict(bundle.get("review") or EMPTY_REVIEW)
+    if replaced:
+        review["confirmed_mismatches"] = []
+    updated = evaluate_claim(bundle["claim"], entries, case_id, bundle["engine"], today, refs, review)
+    previous_missing = [m["name"] for m in bundle["missing"]]
+    updated["created_at"] = bundle.get("created_at")
+    updated["rounds"] = bundle.get("rounds", []) + [
+        _round(len(bundle.get("rounds", [])) + 1, [_label(e) for e in new_entries], updated, previous_missing)]
+    save_claim(conn, updated)
+    log_decision(conn, case_id, "고객 재제출", engine, updated["decision"], updated["reasons"])
+    return updated

@@ -221,6 +221,72 @@ def test_finalize_closes_claim_and_logs(tmp_path):
     conn = connect(tmp_path / "a.db")
     mismatch_case(conn)
     closed = finalize_claim(conn, "B1", editor="담당자A", final_decision="보완요청")
-    assert closed["status"] == "검토완료"
+    # 보완요청으로 확정하면 고객 재제출을 기다린다
+    assert closed["status"] == "보완대기"
     assert list_claims(conn, status="검토대기") == []
     assert list_decisions(conn, "B1")[-1]["decision"] == "보완요청"
+
+
+
+# ── 상태와 보완 재제출 ─────────────────────────────────────
+import pytest  # noqa: E402
+
+from src.bundle import resubmit_claim  # noqa: E402
+
+
+def test_status_follows_decision():
+    complete = [{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS
+    assert run(complete)["status"] == "접수완료"
+    assert run(complete[:3])["status"] == "보완대기"
+    assert run(complete, extractors=fake_extractors(low=("진단명",)))["status"] == "검토대기"
+
+
+def test_finalize_as_accept_closes_claim(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    mismatch_case(conn)
+    assert finalize_claim(conn, "B1", editor="담당자A", final_decision="접수")["status"] == "접수완료"
+
+
+def test_resubmitting_missing_documents_completes_claim(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    first = run([{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS[:3], conn=conn)
+    assert first["status"] == "보완대기"
+    assert [r["round"] for r in first["rounds"]] == [1]
+    result = resubmit_claim(conn, "B1", OUTPATIENT_DOCS[3:], extractors=fake_extractors(),
+                            classifier=fake_classifier, today=TODAY, refs=PASS_REFS)
+    assert result["decision"] == AUTO and result["status"] == "접수완료"
+    last = result["rounds"][-1]
+    assert last["round"] == 2
+    assert last["resolved"] == ["진료비세부내역서", "진단명 포함 서류"]
+    assert last["still_missing"] == []
+    assert list_decisions(conn, "B1")[-1]["actor"] == "고객 재제출"
+
+
+def test_corrected_power_of_attorney_replaces_old_one(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    mismatch_case(conn)                                     # 위임장 수임인 '김철슈' ≠ 예금주 '김철수'
+    review_claim(conn, "B1", editor="담당자A", confirmed_mismatches=["B02"], today=TODAY, refs=PASS_REFS)
+    finalize_claim(conn, "B1", editor="담당자A", final_decision="보완요청")
+    corrected = fake_extractors(claim_overrides={"예금주": "김철수", "계좌번호": "110-999-000000"})
+    result = resubmit_claim(conn, "B1", [{"declared_type": "위임장", "image": image("12")}], extractors=corrected,
+                            classifier=fake_classifier, today=TODAY, refs=PASS_REFS)
+    assert [d["declared_type"] for d in result["documents"]].count("위임장") == 1
+    assert {c["rule"]: c["status"] for c in result["checks"]}["B02"] == "pass"
+    assert result["review"]["confirmed_mismatches"] == []   # 새 위임장이라 이전 확정은 무효
+    assert result["decision"] == AUTO
+
+
+def test_resubmit_only_when_waiting_for_customer(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    run([{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS, conn=conn)  # 접수완료
+    with pytest.raises(ValueError):
+        resubmit_claim(conn, "B1", [], extractors=fake_extractors(), classifier=fake_classifier,
+                       today=TODAY, refs=PASS_REFS)
+
+
+def test_each_image_document_gets_its_own_image_id(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    first = mismatch_case(conn)
+    ids = [d["image_id"] for d in first["documents"]]
+    assert ids[0] and ids[1] and ids[0] != ids[1]
+    assert all(i is None for i in ids[2:])          # 이미지 없는 서류

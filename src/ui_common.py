@@ -48,18 +48,18 @@ def save_case_image(case_id, image):
     image.save(CASE_IMAGE_DIR / f"{case_id}.png")
 
 
-def save_bundle_images(case_id, images):
-    """청구 건의 서류 이미지를 순번대로 저장한다 (이미지 없는 서류는 건너뜀)."""
+def save_entry_images(entries, images):
+    """청구 건 서류(entries)와 같은 순서의 원본 이미지를 각 서류의 image_id로 저장한다."""
     CASE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    for index, image in enumerate(images):
-        if image is not None:
-            image.save(CASE_IMAGE_DIR / f"{case_id}_{index}.png")
+    for entry, image in zip(entries, images):
+        if image is not None and entry.get("image_id"):
+            image.save(CASE_IMAGE_DIR / f"{entry['image_id']}.png")
 
 
-def load_bundle_image(case_id, index):
+def load_entry_image(entry):
     from PIL import Image
-    path = CASE_IMAGE_DIR / f"{case_id}_{index}.png"
-    return Image.open(path).convert("RGB") if path.exists() else None
+    path = CASE_IMAGE_DIR / f"{entry.get('image_id')}.png"
+    return Image.open(path).convert("RGB") if entry.get("image_id") and path.exists() else None
 
 
 def load_case_image(case_id):

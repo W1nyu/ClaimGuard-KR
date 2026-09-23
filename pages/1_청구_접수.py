@@ -1,12 +1,16 @@
-"""화면 1: 청구 접수 — 청구 정보와 서류 묶음을 받아 구비서류 완비와 서류 간 대조를 판단한다."""
+"""화면 1: 청구 접수 — 청구 정보와 서류 묶음을 받아 구비서류 완비와 서류 간 대조를 판단한다.
+
+보완대기 건에는 '보완 서류 제출'로 빠진 서류를 추가로 낼 수 있다(같은 건에 붙여 다시 판단).
+"""
 from PIL import Image
 import streamlit as st
 
-from src.bundle import process_claim
+from src.audit import get_claim, list_claims
+from src.bundle import process_claim, resubmit_claim
 from src.claim_docs import CLAIM_ITEMS, INJURY_CAUSES, check_completeness, document_catalog, required_documents
 from src.load_data import list_documents, load_image
 from src.pipeline import ENGINE_NAMES
-from src.ui_common import STATUS_LABELS, decision_badge, draw_fields, get_conn, rules_table, save_bundle_images
+from src.ui_common import STATUS_LABELS, decision_badge, draw_fields, get_conn, rules_table, save_entry_images
 
 st.set_page_config(page_title="청구 접수", layout="wide")
 st.title("청구 접수")
@@ -22,6 +26,58 @@ def sample_documents():
     powers = {d["doc_id"]: d for d in list_documents("val", ["2-3.위임장"])}
     return claims, powers
 
+
+def resubmission_view():
+    """보완대기 건에 고객이 빠진 서류를 추가로 낸다."""
+    conn = get_conn()
+    waiting = list_claims(conn, status="보완대기")
+    if not waiting:
+        st.info("보완을 기다리는 청구 건이 없습니다.")
+        return
+    labels = {f"{c['case_id']} · {c['claim']['type']} · {len(c['rounds'])}회차": c["case_id"] for c in waiting}
+    case_id = labels[st.selectbox("보완 대기 건", list(labels), key="resubmit_case")]
+    bundle = get_claim(conn, case_id)
+    if bundle["customer_message"]:
+        st.markdown("**고객에게 보낸 보완 안내**")
+        st.code(bundle["customer_message"], language=None)
+
+    claims, powers = sample_documents()
+    left, right = st.columns(2)
+    with left:
+        claim_label = st.selectbox("고쳐서 다시 낸 보험금청구서 (없으면 그대로 둠)", ["(없음)"] + list(claims),
+                                   key="resubmit_claim_doc")
+        power_label = st.selectbox("새로 낸 위임장", ["(없음)"] + list(powers), key="resubmit_power_doc")
+    with right:
+        still_missing = [m["any_of"][0] for m in bundle["missing"] if m["name"] not in ("보험금청구서", "위임장")]
+        others = st.multiselect("추가로 낸 서류 (종류만 선택)",
+                                [d for d in document_catalog() if d not in ("보험금청구서", "위임장")],
+                                default=still_missing, key="resubmit_others")
+    if st.button("보완 서류 제출", type="primary"):
+        documents = [{"declared_type": d, "image": None} for d in others]
+        if claim_label != "(없음)":
+            documents.insert(0, {"declared_type": "보험금청구서", "image": load_image(claims[claim_label])})
+        if power_label != "(없음)":
+            documents.insert(0, {"declared_type": "위임장", "image": load_image(powers[power_label])})
+        with st.spinner("추가 서류를 붙여 다시 판단하는 중..."):
+            updated = resubmit_claim(conn, case_id, documents)
+            save_entry_images(updated["documents"][-len(documents):], [d["image"] for d in documents])
+        last = updated["rounds"][-1]
+        st.subheader(f"{last['round']}회차 결정: {decision_badge(updated['decision'])}")
+        if last["resolved"]:
+            st.success("해결된 서류: " + ", ".join(last["resolved"]))
+        if last["still_missing"]:
+            st.warning("아직 빠진 서류: " + ", ".join(last["still_missing"]))
+        if updated["status"] == "검토대기":
+            st.info("담당자 확인이 필요해 '청구 검토' 화면으로 넘어갔습니다.")
+        st.dataframe([{"회차": r["round"], "시각": r["at"], "낸 서류": ", ".join(r["submitted"]), "결정": r["decision"],
+                       "해결": ", ".join(r["resolved"]), "남은 누락": ", ".join(r["still_missing"])}
+                      for r in updated["rounds"]], hide_index=True, width="stretch")
+
+
+mode = st.radio("접수 구분", ["새 청구", "보완 서류 제출"], horizontal=True, key="mode")
+if mode == "보완 서류 제출":
+    resubmission_view()
+    st.stop()
 
 left, right = st.columns(2)
 with left:
@@ -80,7 +136,7 @@ if st.button("청구 접수", type="primary"):
         st.session_state["bundle"] = process_claim(claim, documents, engine=engine, conn=get_conn())
         st.session_state["bundle_images"] = [d["image"] for d in documents]
         # 담당자 검토 화면에서 원본을 보여주려고 이미지를 저장한다
-        save_bundle_images(st.session_state["bundle"]["case_id"], st.session_state["bundle_images"])
+        save_entry_images(st.session_state["bundle"]["documents"], st.session_state["bundle_images"])
 
 bundle = st.session_state.get("bundle")
 if bundle:

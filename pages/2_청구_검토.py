@@ -6,7 +6,7 @@ import streamlit as st
 
 from src.audit import get_claim, list_claims
 from src.bundle import finalize_claim, review_claim
-from src.ui_common import STATUS_LABELS, decision_badge, draw_fields, get_conn, load_bundle_image
+from src.ui_common import STATUS_LABELS, decision_badge, draw_fields, get_conn, load_entry_image
 
 st.set_page_config(page_title="청구 검토", layout="wide")
 st.title("청구 검토")
@@ -72,7 +72,7 @@ for index, document in enumerate(bundle["documents"]):
                             if (r["값"] or "") != document["values"].get(r["칸"], "")}
             confirmed_fields[index] = [r["칸"] for r in edited if r["확인"]]
         with right:
-            image = load_bundle_image(case_id, index)
+            image = load_entry_image(document)
             if image is not None:
                 st.image(draw_fields(image, document["form_code"], document["extracted"]), width="stretch")
 
