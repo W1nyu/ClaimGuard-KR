@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS cases (
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT, at TEXT, actor TEXT, engine TEXT, decision TEXT, reasons TEXT
 );
+CREATE TABLE IF NOT EXISTS claims (
+    case_id TEXT PRIMARY KEY, created_at TEXT, decision TEXT, status TEXT, data TEXT
+);
 CREATE TABLE IF NOT EXISTS edits (
     id INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT, at TEXT, field TEXT, old TEXT, new TEXT, editor TEXT
 );
@@ -106,3 +109,26 @@ def list_edits(conn, case_id=None):
     if case_id:
         query, params = query + " WHERE case_id = ?", (case_id,)
     return [dict(r) for r in conn.execute(query + " ORDER BY id", params).fetchall()]
+
+
+def save_claim(conn, bundle):
+    """청구 건(서류 묶음) 결과를 통째로 JSON으로 저장한다. 같은 건 ID면 덮어쓴다."""
+    existing = get_claim(conn, bundle["case_id"])
+    created = existing["created_at"] if existing else _now()
+    # 이미지 객체는 저장하지 않는다
+    data = json.dumps({**bundle, "created_at": created}, ensure_ascii=False, default=str)
+    conn.execute("INSERT OR REPLACE INTO claims (case_id, created_at, decision, status, data) VALUES (?, ?, ?, ?, ?)",
+                 (bundle["case_id"], created, bundle["decision"], bundle["status"], data))
+    conn.commit()
+
+
+def get_claim(conn, case_id):
+    row = conn.execute("SELECT data FROM claims WHERE case_id = ?", (case_id,)).fetchone()
+    return json.loads(row["data"]) if row else None
+
+
+def list_claims(conn, status=None):
+    query, params = "SELECT data FROM claims", ()
+    if status:
+        query, params = query + " WHERE status = ?", (status,)
+    return [json.loads(r["data"]) for r in conn.execute(query + " ORDER BY created_at", params).fetchall()]

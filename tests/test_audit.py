@@ -48,3 +48,13 @@ def test_decisions_and_edits_are_logged_in_order(tmp_path):
     edits = list_edits(conn)
     assert edits[0]["field"] == "진단명" and edits[0]["old"] == "근엄" and edits[0]["new"] == "근염"
     assert "at" in edits[0]
+
+
+def test_claims_round_trip_and_update(tmp_path):
+    from src.audit import get_claim, list_claims, save_claim
+    conn = connect(tmp_path / "audit.db")
+    save_claim(conn, {"case_id": "B1", "decision": "보완요청", "status": "처리완료", "missing": [{"name": "위임장"}]})
+    save_claim(conn, {"case_id": "B1", "decision": "자동접수", "status": "처리완료", "missing": []})
+    assert get_claim(conn, "B1")["decision"] == "자동접수"
+    assert [c["case_id"] for c in list_claims(conn)] == ["B1"]
+    assert get_claim(conn, "없음") is None
