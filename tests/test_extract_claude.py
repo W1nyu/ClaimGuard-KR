@@ -8,9 +8,10 @@ from src.form_templates import load_form_fields
 
 
 def test_prompt_lists_every_field_and_forbids_correction():
-    prompt = build_prompt("16", "C:/tmp/a.png")
-    for field in load_form_fields("16"):
-        assert field in prompt
+    for code in ["12", "15", "16"]:
+        prompt = build_prompt(code, "C:/tmp/a.png")
+        for field in load_form_fields(code):
+            assert field in prompt
     assert "C:/tmp/a.png" in prompt
     assert "고치지" in prompt
 
@@ -52,3 +53,8 @@ def test_extract_fields_cli_uses_runner_with_image_path():
     result = extract_fields_cli(image, "16", runner=fake_runner)
     assert result["진단명"]["value"] == "근염"
     assert ".png" in seen["prompt"]
+
+
+def test_prompt_names_the_right_form():
+    assert "위임장" in build_prompt("12", "a.png")
+    assert "보험금 청구서" in build_prompt("16", "a.png")

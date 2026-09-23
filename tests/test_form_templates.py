@@ -50,7 +50,7 @@ def test_overlapping_fields_pick_smallest():
 
 
 def test_real_config_files_exist():
-    for code in ["15", "16"]:
+    for code in ["12", "15", "16"]:
         fields = load_form_fields(code)
         assert len(fields) >= 15
         for rect in fields.values():

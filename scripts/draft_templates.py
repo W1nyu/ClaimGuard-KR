@@ -12,13 +12,13 @@ import numpy as np
 from PIL import ImageDraw
 from sklearn.cluster import DBSCAN
 
-from src.load_data import PROJECT_ROOT, label_boxes, list_documents, load_image, load_label
+from src.load_data import CATEGORY_BY_FORM, PROJECT_ROOT, label_boxes, list_documents, load_image, load_label
 
 OUT_DIR = PROJECT_ROOT / "data" / "processed" / "templates"
 
 
 def collect_boxes(form_code):
-    docs = [d for d in list_documents("train", ["2-5.청구서"]) if d["form_code"] == form_code]
+    docs = [d for d in list_documents("train", [CATEGORY_BY_FORM[form_code]]) if d["form_code"] == form_code]
     boxes = []
     for doc in docs:
         boxes.extend(label_boxes(load_label(doc)))

@@ -41,3 +41,9 @@ def test_extract_fields_returns_every_field_with_score():
     assert set(result) == set(load_form_fields("16"))
     assert result["사고_월"] == {"value": "11", "raw": "1|", "score": 0.5}
     assert result["직업"]["value"] == "1|"
+
+
+def test_power_of_attorney_number_fields_are_cleaned():
+    assert clean_value("수임인_계좌번호", "43O556-9O-5O8660") == "430556-90-508660"
+    assert clean_value("위임인_주민번호", "724424-4884395") == "724424-4884395"
+    assert clean_value("수임인_은행명", "아름") == "아름"
