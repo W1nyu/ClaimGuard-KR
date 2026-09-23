@@ -1,12 +1,13 @@
-"""보험금 청구서류 접수 자동화 데모 - 시작 화면.
+"""ClaimGuard-KR 시작 화면.
 
 실행: .venv/Scripts/streamlit run app.py
 """
 import streamlit as st
 
-st.set_page_config(page_title="청구서류 접수 자동화", layout="wide")
+st.set_page_config(page_title="ClaimGuard-KR", layout="wide")
 
-st.title("보험금 청구서류 접수 자동화")
+st.title("ClaimGuard-KR")
+st.subheader("사람 검토와 AI 위험평가를 갖춘 보험금 청구서류 접수 자동화")
 st.markdown(
     """
 DB손해보험 양식 서류(AI Hub 공개 데이터, 값은 가상)를 대상으로 한 **접수 단계 자동화 + AI 통제** 데모입니다.
