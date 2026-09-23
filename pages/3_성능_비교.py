@@ -55,4 +55,11 @@ for engine, suffix in [("엔진 A", ""), ("엔진 B", "_claude")]:
     if rules:
         st.dataframe(rules, hide_index=True, width="stretch")
 
+st.header("청구 건 단위 처리 (위임장 대조·위임 서류 자동 판단)")
+bundle_rows = read_csv("eval_bundle.csv")
+if bundle_rows:
+    st.dataframe(bundle_rows, hide_index=True, width="stretch")
+    st.caption("거짓 불일치: 내용이 일치하는 청구서·위임장 쌍인데 OCR 오류로 '불일치'가 나온 비율. "
+               "그래서 서류 간 불일치는 고객에게 바로 보내지 않고 담당자가 원본을 확인합니다.")
+
 st.caption("데이터 값이 무작위라 거의 모든 서류가 여러 규칙을 위반합니다. 결정 일치율보다 규칙별 일치율이 더 정직한 지표입니다.")

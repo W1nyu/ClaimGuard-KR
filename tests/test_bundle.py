@@ -105,7 +105,10 @@ def test_power_of_attorney_mismatch_is_flagged():
     checks = {c["rule"]: c for c in result["checks"]}
     assert checks["B02"]["status"] == "fail" and "이영희" in checks["B02"]["message"]
     assert checks["B05"]["status"] == "fail"
-    assert result["decision"] == SUPPLEMENT_DECISION
+    # OCR로 읽은 두 서류의 불일치는 OCR 오류일 수 있어 고객에게 바로 보내지 않고 담당자가 확인한다
+    assert checks["B02"]["action"] == "담당자검토"
+    assert result["decision"] == REVIEW_DECISION
+    assert "이영희" not in (result["customer_message"] or "")
 
 
 def test_declared_type_different_from_classified_needs_review():
@@ -130,3 +133,13 @@ def test_injury_without_proof_needs_detailed_accident_description():
                  extractors=fake_extractors(claim_overrides={"사고경위": ""}))
     b07 = [c for c in result["checks"] if c["rule"] == "B07"][0]
     assert b07["status"] == "fail" and "육하원칙" in b07["message"]
+
+
+def test_low_confidence_names_do_not_auto_add_delegation_documents():
+    docs = [{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS
+    result = run(docs, extractors=fake_extractors(claim_overrides={"예금주": "김철수"}, low=("예금주",)))
+    b01 = [c for c in result["checks"] if c["rule"] == "B01"][0]
+    assert b01["status"] == "unknown" and "위임 여부" in b01["message"]
+    assert result["effective_claim"]["delegation"] is False
+    assert "위임장" not in [m["name"] for m in result["missing"]]
+    assert result["decision"] == REVIEW_DECISION

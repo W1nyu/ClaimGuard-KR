@@ -7,10 +7,11 @@
 건 단위 규칙
   D01 필요 서류 누락                         → 보완요청 (서류명·발급처 안내)
   B01 예금주 ≠ 피보험자 → 위임 서류 자동 추가  (안내)
-  B02 위임장 수임인 = 청구서 예금주            → 불일치 시 보완요청
-  B03 위임장 수령계좌·은행 = 청구서 계좌·은행   → 불일치 시 보완요청
-  B04 위임장 피보험자 = 청구서 피보험자         → 불일치 시 보완요청
-  B05 위임장 사고일 = 청구서 사고일            → 불일치 시 보완요청
+  B01' 이름 확신도가 낮으면 자동 추가하지 않고 "위임 여부 확인 필요"  → 담당자검토
+  B02 위임장 수임인 = 청구서 예금주            → 불일치 시 담당자검토
+  B03 위임장 수령계좌·은행 = 청구서 계좌·은행   → 불일치 시 담당자검토
+  B04 위임장 피보험자 = 청구서 피보험자         → 불일치 시 담당자검토
+  B05 위임장 사고일 = 청구서 사고일            → 불일치 시 담당자검토
   B06 고객이 고른 서류 종류 ≠ 판별된 양식       → 담당자검토
   B07 상해 사고확인서류 발급불가인데 사고경위가 비어 있음 → 보완요청
 """
@@ -22,7 +23,7 @@ from src.claim_docs import check_completeness, required_documents
 from src.load_data import FORM_NAMES
 from src.pipeline import _default_classifier, _default_extractors, process_document
 from src.reference import normalize_name
-from src.route import REVIEW_DECISION, decide
+from src.route import CONFIDENCE_THRESHOLD, REVIEW_DECISION, decide
 from src.validate import DOCUMENT, REVIEW, SUPPLEMENT
 
 # 판별된 양식 코드 → 구비서류 규칙표의 서류 이름
@@ -70,8 +71,10 @@ def _compare(rule, label, claim_value, poa_value, fields, equal):
         return _check(rule, "unknown", fields, f"{label}: 비교할 값이 비어 있어 확인하지 못했습니다", REVIEW)
     if equal:
         return _check(rule, "pass", fields, "", SUPPLEMENT)
+    # OCR로 읽은 두 서류의 불일치는 OCR 오류일 수 있다(일치하는 쌍에서도 24~58% 거짓 불일치, results/eval_bundle.csv).
+    # 그래서 고객에게 바로 보완을 요청하지 않고 담당자가 원본을 확인한다.
     return _check(rule, "fail", fields,
-                  f"{label} 불일치: 청구서 '{claim_value}' / 위임장 '{poa_value}'", SUPPLEMENT)
+                  f"{label} 불일치: 청구서 '{claim_value}' / 위임장 '{poa_value}' — 담당자 원본 확인 필요", REVIEW)
 
 
 def needs_delegation(claim_values):
@@ -150,10 +153,17 @@ def process_claim(claim, documents, engine="paddle", case_id=None, conn=None, ex
     if claim_form and claim_form["form_code"] == "16":
         holder, insured = claim_form["values"].get("예금주", ""), claim_form["values"].get("피보험자_성명", "")
         if needs_delegation(claim_form["values"]) and not claim["delegation"]:
-            effective["delegation"] = True
-            checks.append(_check("B01", "pass", ["예금주", "피보험자_성명"],
-                                 f"예금주({holder})와 피보험자({insured})가 달라 위임 서류를 필요 서류에 추가했습니다",
-                                 DOCUMENT))
+            scores = [claim_form["extracted"].get(f, {}).get("score", 0) for f in ["예금주", "피보험자_성명"]]
+            if min(scores) >= CONFIDENCE_THRESHOLD:
+                effective["delegation"] = True
+                checks.append(_check("B01", "pass", ["예금주", "피보험자_성명"],
+                                     f"예금주({holder})와 피보험자({insured})가 달라 위임 서류를 필요 서류에 추가했습니다",
+                                     DOCUMENT))
+            else:
+                # 이름을 잘못 읽어 달라 보일 수 있다 → 고객에게 불필요한 위임 서류를 요구하지 않도록 담당자가 확인
+                checks.append(_check("B01", "unknown", ["예금주", "피보험자_성명"],
+                                     f"예금주({holder})와 피보험자({insured})가 달라 보이지만 이름 확신도가 낮아 "
+                                     "위임 여부 확인 필요", REVIEW))
         if poa:
             checks += _cross_check(claim_form["values"], poa["values"])
     if claim["type"] == "상해" and claim.get("injury_cause") == "발급불가" and claim_form:
