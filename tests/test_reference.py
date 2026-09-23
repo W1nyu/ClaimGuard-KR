@@ -51,6 +51,12 @@ def test_known_bank_allows_eunhaeng_suffix():
     assert not is_known_bank("은행", banks)
 
 
+def test_bank_name_inside_another_name_is_not_a_match():
+    # '마을'은 '새마을금고' 안에 들어 있지만 다른 이름이다
+    assert not is_known_bank("마을", {"045": "새마을금고"})
+    assert is_known_bank("농협", {"011": "NH농협은행"})
+
+
 def test_check_address_found_and_cached(tmp_path):
     cache = tmp_path / "juso.json"
     calls = []

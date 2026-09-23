@@ -138,7 +138,8 @@ def is_known_bank(name, banks=None):
     core = normalize_name(name).removesuffix("은행")
     if len(core) < 2:
         return False
-    return any(core == n.removesuffix("은행") or core in n for n in names)
+    # 공식 이름이 입력으로 끝나면 같은 은행 (KB국민 ← 국민, NH농협 ← 농협). 중간에 든 것(새마을금고 ← 마을)은 제외
+    return any(n.removesuffix("은행").endswith(core) for n in names)
 
 
 def _fetch_juso(address, key):
