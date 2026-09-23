@@ -5,7 +5,8 @@ from streamlit.testing.v1 import AppTest
 from src.audit import connect, log_decision, save_case
 from src.load_data import PROJECT_ROOT
 
-PAGES = ["app.py", "pages/1_서류_접수.py", "pages/2_검토_대기함.py", "pages/3_성능_비교.py", "pages/5_감사_로그.py"]
+PAGES = ["app.py", "pages/1_서류_접수.py", "pages/2_검토_대기함.py", "pages/3_성능_비교.py", "pages/4_AI_위험평가.py",
+         "pages/5_감사_로그.py"]
 
 
 @pytest.fixture(autouse=True)
