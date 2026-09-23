@@ -1,0 +1,2 @@
+# 배치 파일은 Windows 줄바꿈(CRLF)이어야 cmd.exe가 올바르게 읽는다
+*.cmd text eol=crlf
