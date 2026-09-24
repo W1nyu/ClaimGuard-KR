@@ -4,6 +4,8 @@
 
 📄 한 장 요약 페이지: https://claude.ai/artifact/7QR5eQEP7ShAT5PUbrWg6M
 
+💡 인사이트 한 장: https://claude.ai/artifact/GkY2kk6gv5XGvm7y3M5fmi
+
 DB손해보험 양식 보험 서류(AI Hub 공개 데이터, 값은 가상)를 대상으로
 **서류 분류 → 항목 추출 → 접수 검증 → 처리 결정**을 자동화하고,
 2026년 6월 개정 **「금융분야 인공지능 가이드라인」의 위험평가 체계**로 시스템 자체를 평가한 개인 프로젝트입니다.
