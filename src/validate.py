@@ -1,8 +1,9 @@
-"""접수 검증 규칙 R01~R11.
+"""접수 검증 규칙 R01~R12.
 
 청구서 칸 값(dict)을 받아 규칙마다 결과를 돌려준다. 결과 하나는
 {"rule", "status": pass/fail/unknown, "fields", "message", "action", "detail"} 모양이다.
 기준 데이터 조회(질병코드·직업·은행·주소)는 refs로 바꿔 끼울 수 있어 테스트 때 파일·네트워크가 필요 없다.
+unread(글씨는 있지만 OCR이 읽지 못한 칸)는 R01 누락에서 빼고 R12로 담당자에게 넘긴다.
 """
 import re
 from datetime import date
@@ -97,11 +98,24 @@ def _check_rrn(text):
     return None
 
 
+# 통과로 보는 기준표 조회 결과: 정확 일치, 흔히 쓰는 이름 사전
+MATCH_PASSES = ("exact", "synonym")
+
+
 def _match_rule(rule, field, value, lookup, label):
-    """질병코드·직업코드처럼 기준표에서 이름을 찾는 규칙. 정확 일치만 통과."""
+    """질병코드·직업코드처럼 기준표에서 이름을 찾는 규칙. 정확 일치(또는 이름 사전)만 통과.
+
+    OCR 한 자모 차이 보정(corrected)은 통과시키지 않고 담당자에게 보정안으로 보여준다.
+    검증 데이터에서 보정 31건 중 1건이 다른 병(케산병을 '계산병'으로 읽어 고산병으로 보정)이었다.
+    """
     found = lookup(value)
-    if found["match"] == "exact":
-        return _result(rule, True, [field], "", REVIEW, detail={"code": found["code"], "name": found["name"]})
+    if found["match"] in MATCH_PASSES:
+        return _result(rule, True, [field], "", REVIEW,
+                       detail={"code": found["code"], "name": found["name"], "match": found["match"]})
+    if found["match"] == "corrected":
+        return _result(rule, False, [field],
+                       f"{label} '{value}'은(는) '{found['name']}'({found['code']})을(를) 잘못 읽은 것으로 보입니다 "
+                       f"— 원본 확인 후 값을 고쳐 주세요", REVIEW, detail=found, status="unknown")
     if found["candidates"]:
         message = f"{label} '{value}'과(와) 정확히 일치하는 코드가 없습니다. 후보: {', '.join(found['candidates'])}"
     else:
@@ -109,15 +123,22 @@ def _match_rule(rule, field, value, lookup, label):
     return _result(rule, False, [field], message, REVIEW, detail=found)
 
 
-def validate(form_code, values, today=None, refs=None):
+def validate(form_code, values, today=None, refs=None, unread=None):
     today = today or date.today()
     refs = refs or DEFAULT_REFS
     v = {name: str(value).strip() for name, value in values.items() if value is not None}
+    unread = sorted(f for f in (unread or []) if not v.get(f))
     results = []
 
-    # R01 필수 칸
-    missing = [f for f in REQUIRED_FIELDS[form_code] if not v.get(f)]
+    # R01 필수 칸 (글씨가 있는 칸은 비어 있는 것이 아니므로 뺀다)
+    missing = [f for f in REQUIRED_FIELDS[form_code] if not v.get(f) and f not in unread]
     results.append(_result("R01", not missing, missing, f"필수 항목이 비어 있습니다: {', '.join(missing)}", SUPPLEMENT))
+
+    # R12 읽지 못한 칸 → 담당자가 원본에서 값을 확인
+    if unread:
+        results.append(_result("R12", False, unread,
+                               f"글씨는 있지만 읽지 못한 칸이 있습니다: {', '.join(unread)} — 담당자 원본 확인 필요",
+                               REVIEW, status="unknown"))
 
     # R02 날짜 실재 / R03 날짜 순서 / R04 소멸시효
     dates = _dates(form_code, v)
@@ -194,4 +215,15 @@ def validate(form_code, values, today=None, refs=None):
                 "R11", same, ["예금주", "피보험자_성명"],
                 f"예금주({holder})와 피보험자({insured})가 달라 위임장과 인감증명서가 필요합니다", DOCUMENT))
 
-    return results
+    return [_hold_for_unread(r, unread) for r in results]
+
+
+def _hold_for_unread(result, unread):
+    """읽지 못한 칸 때문에 실패한 규칙은 고객에게 보내지 않고 담당자 판단으로 보류한다.
+
+    예: 사고_월을 못 읽으면 사고일이 '2026--30'이 되어 R02(날짜 오류)가 실패하지만, 실제 서류에는 날짜가 적혀 있다.
+    """
+    if result["status"] != "fail" or result["rule"] == "R01" or not set(result["fields"]) & set(unread):
+        return result
+    return dict(result, status="unknown", action=REVIEW, detail={**result["detail"], "held_for_unread": True},
+                message=f"{result['message']} (읽지 못한 칸이 있어 원본 확인 후 판단)")

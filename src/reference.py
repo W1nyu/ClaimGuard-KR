@@ -12,18 +12,42 @@ import urllib.request
 from functools import lru_cache
 
 from src.load_data import PROJECT_ROOT
+from src.metrics import edit_distance
 
 REFERENCE_DIR = PROJECT_ROOT / "data" / "reference"
 CACHE_DIR = PROJECT_ROOT / "data" / "processed" / "reference_cache"
 JUSO_URL = "https://business.juso.go.kr/addrlink/addrLinkApi.do"
+SYNONYMS_PATH = PROJECT_ROOT / "config" / "diagnosis_synonyms.json"
 # 이 값 이상 비슷하면 '유사 후보'로 본다 (0~1, difflib 기준)
 SIMILARITY_CUTOFF = 0.8
+# 자모 단위 비교: 이 거리 이하는 후보로 보여 주고, 거리 1이면서 후보가 하나뿐이면 OCR 오류로 보고 보정한다.
+# 검증 청구서의 진단명에서 거리 1·유일 후보 보정은 23건 중 22건이 정답이었다 (틀린 1건은 정답도 KCD에 없는 이름).
+JAMO_CANDIDATE_DISTANCE = 3
+JAMO_CORRECT_DISTANCE = 1
+CHOSEONG = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
+JUNGSEONG = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ"
+JONGSEONG = " ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ"
 NO_MATCH = {"match": "none", "code": None, "name": None, "candidates": []}
 
 
 def normalize_name(text):
     """전각 문자(Ｋ, Ｂ 등)를 보통 문자로 바꾸고 공백을 모두 없앤다."""
     return "".join(unicodedata.normalize("NFKC", str(text)).split())
+
+
+@lru_cache(maxsize=200_000)
+def to_jamo(text):
+    """한글 음절을 자모로 푼다. '염'과 '영'처럼 받침 하나만 다른 OCR 오류가 거리 1이 된다."""
+    out = []
+    for ch in text:
+        index = ord(ch) - 0xAC00
+        if 0 <= index < 11172:
+            out += [CHOSEONG[index // 588], JUNGSEONG[index % 588 // 28]]
+            if index % 28:
+                out.append(JONGSEONG[index % 28])
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def load_env(path=PROJECT_ROOT / ".env"):
@@ -99,19 +123,50 @@ def bank_table():
     return _cached("banks.json", _build_banks)
 
 
-def match_name(query, table, allow_contains=False):
-    """이름을 기준표에서 찾는다. 정확 일치 → (허용 시) 부분 일치 → 유사 후보 순서."""
+def _jamo_neighbors(key, table):
+    """자모 거리가 가까운 기준표 이름 [(거리, 키)] (가까운 순, 최대 3개)."""
+    query = to_jamo(key)
+    scored = []
+    for other in table:
+        if abs(len(other) - len(key)) > 1:
+            continue
+        jamo = to_jamo(other)
+        if abs(len(jamo) - len(query)) > JAMO_CANDIDATE_DISTANCE:
+            continue
+        distance = edit_distance(query, jamo)
+        if distance <= JAMO_CANDIDATE_DISTANCE:
+            scored.append((distance, other))
+    return sorted(scored)[:3]
+
+
+def match_name(query, table, allow_contains=False, synonyms=None):
+    """이름을 기준표에서 찾는다.
+
+    정확 일치 → 흔히 쓰는 이름 사전 → (허용 시) 부분 일치 → 자모 한 개 차이 보정 → 유사 후보 순서.
+    """
     key = normalize_name(query)
     if not key:
         return dict(NO_MATCH)
     if key in table:
         code, name = table[key]
         return {"match": "exact", "code": code, "name": name, "candidates": []}
+    target = (synonyms or {}).get(key)
+    if target in table:
+        code, name = table[target]
+        return {"match": "synonym", "code": code, "name": name, "candidates": []}
     if allow_contains:
         hits = [k for k in table if key in k]
         if hits:
             code, name = table[hits[0]]
             return {"match": "contains", "code": code, "name": name, "candidates": [table[h][1] for h in hits[:5]]}
+    neighbors = _jamo_neighbors(key, table)
+    if neighbors:
+        distance, best = neighbors[0]
+        unique = len(neighbors) == 1 or neighbors[1][0] > distance
+        # 한 글자짜리는 다른 이름으로 바뀌기 쉬워 보정하지 않는다
+        kind = "corrected" if distance <= JAMO_CORRECT_DISTANCE and unique and len(key) >= 2 else "similar"
+        code, name = table[best]
+        return {"match": kind, "code": code, "name": name, "candidates": [table[k][1] for _, k in neighbors]}
     # 길이가 비슷한 이름만 비교해 속도를 높인다
     nearby = [k for k in table if abs(len(k) - len(key)) <= 2]
     close = difflib.get_close_matches(key, nearby, n=3, cutoff=SIMILARITY_CUTOFF)
@@ -121,8 +176,15 @@ def match_name(query, table, allow_contains=False):
     return dict(NO_MATCH)
 
 
+@lru_cache(maxsize=None)
+def diagnosis_synonyms():
+    """{정규화한 흔히 쓰는 이름: 정규화한 KCD 공식 이름}"""
+    raw = json.loads(SYNONYMS_PATH.read_text(encoding="utf-8"))
+    return {normalize_name(k): normalize_name(v) for k, v in raw.items() if not k.startswith("_")}
+
+
 def lookup_diagnosis(name):
-    return match_name(name, kcd_table())
+    return match_name(name, kcd_table(), synonyms=diagnosis_synonyms())
 
 
 def lookup_job(name):

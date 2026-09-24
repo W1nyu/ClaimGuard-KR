@@ -75,5 +75,20 @@ def rules_table(rules):
     } for r in rules]
 
 
+def field_status(field):
+    """잉크 판단 결과를 담당자에게 보여줄 말."""
+    if field.get("unread") and not field.get("value"):
+        return "읽지 못함 — 원본 확인"
+    if field.get("cleared"):
+        return "글씨 없음 — 인식 글자 비움"
+    return ""
+
+
+def review_order(field):
+    """담당자 확인 순서: 읽지 못한 칸 먼저, 다음은 확신도 낮은 순."""
+    return (not field.get("unread") or bool(field.get("value")), field["score"])
+
+
 def fields_table(extracted):
-    return [{"칸": name, "값": field["value"], "확신도": field["score"]} for name, field in extracted.items()]
+    return [{"칸": name, "값": field["value"], "확신도": field["score"], "상태": field_status(field)}
+            for name, field in extracted.items()]

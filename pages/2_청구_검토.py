@@ -6,7 +6,8 @@ import streamlit as st
 
 from src.audit import get_claim, list_claims
 from src.bundle import finalize_claim, review_claim
-from src.ui_common import STATUS_LABELS, decision_badge, draw_fields, get_conn, load_entry_image
+from src.ui_common import (STATUS_LABELS, decision_badge, draw_fields, field_status, get_conn, load_entry_image,
+                           review_order)
 
 st.set_page_config(page_title="청구 검토", layout="wide")
 st.title("청구 검토")
@@ -55,18 +56,19 @@ if "B01" not in checks and not mismatches:
 
 # ── 2. 서류별 값 확인 ────────────────────────────────────
 st.markdown("### 2. 서류별 값 확인")
-st.caption("확신도 낮은 칸부터 보여줍니다. 값이 틀리면 고치고, 맞으면 '확인'에 체크하세요.")
+st.caption("읽지 못한 칸과 확신도 낮은 칸부터 보여줍니다. 값이 틀리면 고치고, 맞으면(원본도 빈칸이면) '확인'에 체크하세요.")
 edits, confirmed_fields = {}, {}
 for index, document in enumerate(bundle["documents"]):
     if not document["extracted"]:
         continue
-    low = sum(1 for f in document["extracted"].values() if f["score"] < 0.85)
-    with st.expander(f"{document['classified_type']} — 확신도 낮은 칸 {low}개", expanded=low > 0):
+    low = sum(1 for f in document["extracted"].values() if f["score"] < 0.85 or (f.get("unread") and not f["value"]))
+    with st.expander(f"{document['classified_type']} — 읽지 못했거나 확신도 낮은 칸 {low}개", expanded=low > 0):
         left, right = st.columns([3, 2])
         with left:
-            rows = sorted(({"칸": name, "값": field["value"], "확신도": field["score"], "확인": field["score"] >= 1.0}
-                           for name, field in document["extracted"].items()), key=lambda r: r["확신도"])
-            edited = st.data_editor(rows, hide_index=True, width="stretch", disabled=["칸", "확신도"],
+            rows = [{"칸": name, "값": field["value"], "확신도": field["score"], "상태": field_status(field),
+                     "확인": field["score"] >= 1.0}
+                    for name, field in sorted(document["extracted"].items(), key=lambda item: review_order(item[1]))]
+            edited = st.data_editor(rows, hide_index=True, width="stretch", disabled=["칸", "확신도", "상태"],
                                     key=f"fields_{case_id}_{index}")
             edits[index] = {r["칸"]: r["값"] or "" for r in edited
                             if (r["값"] or "") != document["values"].get(r["칸"], "")}

@@ -1,5 +1,5 @@
-﻿engine,form_code,documents,field_exact_rate,mean_cer,sec_per_doc,low_conf_share,low_conf_exact_rate,high_conf_exact_rate
-paddle,15,50,0.643,0.151,0.54,0.379,0.367,0.811
-claude,15,50,0.878,0.048,13.52,0.235,0.598,0.964
-paddle,16,50,0.68,0.135,0.74,0.319,0.33,0.844
-claude,16,50,0.853,0.059,23.03,0.237,0.545,0.948
+﻿engine,form_code,documents,field_exact_rate,mean_cer,unlabeled_skipped,sec_per_doc,low_conf_share,low_conf_exact_rate,high_conf_exact_rate
+paddle,15,50,0.658,0.13,26,0.54,0.379,0.376,0.831
+claude,15,50,0.899,0.025,26,13.52,0.232,0.622,0.983
+paddle,16,50,0.69,0.122,24,0.74,0.313,0.34,0.85
+claude,16,50,0.867,0.043,24,23.03,0.23,0.572,0.954

@@ -1,6 +1,6 @@
 import json
 
-from src.reference import check_address, is_known_bank, match_name, normalize_name
+from src.reference import check_address, is_known_bank, match_name, normalize_name, to_jamo
 
 TABLE = {
     "멀미": ["T75.3", "멀미"],
@@ -85,3 +85,40 @@ def test_check_address_failure_is_unavailable_and_not_cached(tmp_path):
 
     assert check_address("서울 중구", key="k", fetch=broken, cache_path=cache)["status"] == "unavailable"
     assert not cache.exists()
+
+
+def test_to_jamo_splits_syllables():
+    assert to_jamo("염") == "ㅇㅕㅁ"
+    assert to_jamo("가1") == "ㄱㅏ1"
+
+
+def test_one_jamo_ocr_error_is_corrected():
+    # '늑골골절'의 '절'을 '젙'로 읽은 경우: 받침 하나 차이, 후보 하나
+    result = match_name("늑골골젙", TABLE)
+    assert result["match"] == "corrected"
+    assert result["code"] == "S22.3"
+
+
+def test_tie_is_not_corrected():
+    # '한식조리사'·'양식조리사' 둘 다 자모 거리 1이면 어느 쪽인지 정할 수 없다
+    result = match_name("안식조리사", {"한식조리사": ["41121", "한식 조리사"], "잔식조리사": ["9", "잔식 조리사"]})
+    assert result["match"] == "similar"
+    assert len(result["candidates"]) == 2
+
+
+def test_single_syllable_is_not_corrected():
+    assert match_name("멀", {"멀미": ["T75.3", "멀미"], "벌": ["X", "벌"]})["match"] != "corrected"
+
+
+def test_synonym_maps_common_name():
+    result = match_name("유방 암", {"유방의악성신생물": ["C50", "유방의 악성 신생물"]},
+                        synonyms={"유방암": "유방의악성신생물"})
+    assert result == {"match": "synonym", "code": "C50", "name": "유방의 악성 신생물", "candidates": []}
+
+
+def test_synonym_file_points_to_real_kcd_names():
+    from src.reference import diagnosis_synonyms, kcd_table
+    table = kcd_table()
+    for common, official in diagnosis_synonyms().items():
+        assert official in table, official
+        assert common not in table, f"{common}은(는) 이미 공식 명칭"

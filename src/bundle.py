@@ -29,6 +29,7 @@ from datetime import datetime
 
 from src.audit import get_claim, log_decision, log_edit, save_claim
 from src.claim_docs import check_completeness, required_documents
+from src.ink import unread_fields
 from src.load_data import FORM_NAMES
 from src.pipeline import _default_classifier, _default_extractors
 from src.reference import normalize_name
@@ -185,7 +186,8 @@ def evaluate_claim(claim, entries, case_id, engine="paddle", today=None, refs=No
     for index, entry in enumerate(entries):
         if entry["form_code"] in ("15", "16"):
             # 청구서 단건 규칙. 예금주 ≠ 피보험자(R11)는 건 단위에서 위임 서류 완비로 판단한다
-            entry["rules"] = [r for r in validate(entry["form_code"], entry["values"], today=today, refs=refs)
+            entry["rules"] = [r for r in validate(entry["form_code"], entry["values"], today=today, refs=refs,
+                                                  unread=unread_fields(entry["extracted"]))
                               if r["rule"] != "R11"]
         if entry["classified_type"] and entry["classified_type"] != entry["declared_type"]:
             checks.append(_check("B06", "fail", [],
@@ -273,6 +275,8 @@ def review_claim(conn, case_id, editor, edits=None, confirmed_fields=None, confi
         for field in fields:
             if field in entry["extracted"]:
                 entry["extracted"][field]["score"] = 1.0
+                # 읽지 못한 칸을 확인했다면 원본에서도 빈칸인 것 (값이 있으면 edits로 넣는다)
+                entry["extracted"][field].pop("unread", None)
     review = dict(bundle.get("review") or EMPTY_REVIEW)
     review["confirmed_mismatches"] = sorted(set(review["confirmed_mismatches"]) | set(confirmed_mismatches or []))
     if delegation is not None:

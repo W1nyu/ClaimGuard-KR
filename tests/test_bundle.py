@@ -290,3 +290,37 @@ def test_each_image_document_gets_its_own_image_id(tmp_path):
     ids = [d["image_id"] for d in first["documents"]]
     assert ids[0] and ids[1] and ids[0] != ids[1]
     assert all(i is None for i in ids[2:])          # 이미지 없는 서류
+
+
+def unread_extractors():
+    """청구서의 사고_월을 글씨는 있지만 읽지 못한 칸으로 돌려주는 가짜 엔진."""
+    base = fake_extractors()["paddle"]
+
+    def extract(img, form_code):
+        extracted = base(img, form_code)
+        if form_code == "16":
+            extracted["사고_월"] = {"value": "", "raw": "", "score": 0.0, "unread": True}
+        return extracted
+    return {"paddle": extract, "claude": extract}
+
+
+def test_unread_field_goes_to_reviewer_not_customer(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    docs = [{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS
+    first = run(docs, conn=conn, extractors=unread_extractors())
+    assert first["decision"] == REVIEW_DECISION
+    assert any(r.startswith("[R12]") or "[R12]" in r for r in first["reasons"])
+    assert first["customer_message"] is None
+    # 담당자가 원본을 보고 값을 넣으면 R12가 사라진다
+    result = review(conn, edits={0: {"사고_월": "8"}})
+    assert result["decision"] == AUTO
+
+
+def test_reviewer_confirms_unread_field_is_blank(tmp_path):
+    conn = connect(tmp_path / "a.db")
+    docs = [{"declared_type": "보험금청구서", "image": image("16")}] + OUTPATIENT_DOCS
+    run(docs, conn=conn, extractors=unread_extractors())
+    # 원본에서도 빈칸이면 '확인' → 필수 칸 누락(R01)으로 고객에게 보완요청
+    result = review(conn, confirmed_fields={0: ["사고_월"]})
+    assert result["decision"] == "보완요청"
+    assert "사고_월" in result["customer_message"]

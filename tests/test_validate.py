@@ -146,3 +146,54 @@ def test_old_form_uses_two_digit_claim_year():
     assert all(r["status"] == "pass" for r in results.values())
     values["사고일자"] = "7907.2.20"
     assert run(values, form_code="15")["R02"]["status"] == "fail"
+
+
+def test_unread_required_field_is_review_not_missing():
+    values = good_claim()
+    values["사고_월"] = ""
+    results = {r["rule"]: r for r in validate("16", values, today=TODAY, refs=FAKE_REFS, unread=["사고_월"])}
+    # 글씨가 있는 칸은 누락이 아니므로 고객 보완요청(R01)이 아니라 담당자 확인(R12)
+    assert results["R01"]["status"] == "pass"
+    assert results["R12"]["status"] == "unknown"
+    assert results["R12"]["action"] == REVIEW
+    assert results["R12"]["fields"] == ["사고_월"]
+
+
+def test_truly_blank_field_still_asks_customer():
+    values = good_claim()
+    values["사고_월"] = values["진단명"] = ""
+    results = {r["rule"]: r for r in validate("16", values, today=TODAY, refs=FAKE_REFS, unread=["사고_월"])}
+    assert results["R01"]["fields"] == ["진단명"]
+    assert results["R01"]["action"] == SUPPLEMENT
+
+
+def test_unread_ignored_when_value_present():
+    results = {r["rule"] for r in validate("16", good_claim(), today=TODAY, refs=FAKE_REFS, unread=["사고_월"])}
+    assert "R12" not in results
+
+
+def test_r08_passes_synonym():
+    refs = dict(FAKE_REFS, diagnosis=lambda name: {"match": "synonym", "code": "C50", "name": "유방의 악성 신생물",
+                                                   "candidates": []})
+    r = {x["rule"]: x for x in validate("16", good_claim(), today=TODAY, refs=refs)}["R08"]
+    assert r["status"] == "pass"
+    assert r["detail"] == {"code": "C50", "name": "유방의 악성 신생물", "match": "synonym"}
+
+
+def test_r08_ocr_correction_is_suggested_not_passed():
+    refs = dict(FAKE_REFS, diagnosis=lambda name: {"match": "corrected", "code": "M85.3", "name": "치밀골염",
+                                                   "candidates": ["치밀골염"]})
+    values = good_claim()
+    values["진단명"] = "치밀골영"
+    r = {x["rule"]: x for x in validate("16", values, today=TODAY, refs=refs)}["R08"]
+    assert r["status"] == "unknown" and r["action"] == REVIEW
+    assert "치밀골염" in r["message"] and "M85.3" in r["message"]
+
+
+def test_rule_failing_only_because_of_unread_field_is_held_for_reviewer():
+    values = good_claim()
+    values["사고_월"] = ""
+    results = {r["rule"]: r for r in validate("16", values, today=TODAY, refs=FAKE_REFS, unread=["사고_월"])}
+    # 사고일이 '2026--30'이 되어 날짜 규칙이 실패하지만 고객에게 보내지 않는다
+    assert results["R02"]["status"] == "unknown"
+    assert results["R02"]["action"] == REVIEW

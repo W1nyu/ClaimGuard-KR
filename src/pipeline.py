@@ -6,6 +6,7 @@
 import uuid
 
 from src.audit import get_case, log_decision, log_edit, save_case
+from src.ink import apply_ink, field_ink, unread_fields
 from src.load_data import FORM_NAMES
 from src.route import REVIEW_DECISION, decide
 from src.validate import validate
@@ -14,10 +15,17 @@ CLAIM_FORMS = ("15", "16")
 ENGINE_NAMES = {"paddle": "엔진 A (PaddleOCR, 로컬)", "claude": "엔진 B (Claude CLI, 외부 모델)"}
 
 
+def with_ink_check(extractor):
+    """엔진 결과에 칸별 잉크 판단을 더한다: 글씨가 있는데 비었으면 '읽지 못함', 글씨가 없는데 값이 있으면 비움."""
+    def extract(image, form_code):
+        return apply_ink(extractor(image, form_code), field_ink(image, form_code))
+    return extract
+
+
 def _default_extractors():
     from src.extract_claude import extract_fields_cli
     from src.extract_paddle import extract_fields
-    return {"paddle": extract_fields, "claude": extract_fields_cli}
+    return {"paddle": with_ink_check(extract_fields), "claude": with_ink_check(extract_fields_cli)}
 
 
 def _default_classifier(image):
@@ -32,7 +40,8 @@ def _status(decision):
 
 def _evaluate(case, today, refs):
     """현재 값으로 검증·결정을 다시 계산해 case에 채운다."""
-    case["rules"] = validate(case["form_code"], case["values"], today=today, refs=refs)
+    case["rules"] = validate(case["form_code"], case["values"], today=today, refs=refs,
+                             unread=unread_fields(case["extracted"]))
     result = decide(case["rules"], extracted=case["extracted"])
     case.update(result)
     case["status"] = _status(result["decision"])

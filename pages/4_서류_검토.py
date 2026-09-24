@@ -4,7 +4,8 @@ import streamlit as st
 from src.audit import get_case, list_cases
 from src.load_data import FORM_NAMES
 from src.pipeline import approve, apply_edits
-from src.ui_common import decision_badge, draw_fields, get_conn, load_case_image, rules_table
+from src.ui_common import (decision_badge, draw_fields, field_status, get_conn, load_case_image, review_order,
+                           rules_table)
 
 st.set_page_config(page_title="서류 검토 (단건)", layout="wide")
 st.title("서류 검토 (단건)")
@@ -28,13 +29,11 @@ with left:
     for reason in case["reasons"]:
         st.write("- " + reason)
     if case["extracted"]:
-        st.markdown("**값 확인·수정** (확신도 낮은 칸부터)")
-        rows = sorted(
-            ({"칸": name, "값": field["value"], "확신도": field["score"]} for name, field in case["extracted"].items()),
-            key=lambda row: row["확신도"],
-        )
+        st.markdown("**값 확인·수정** (읽지 못한 칸, 확신도 낮은 칸부터)")
+        rows = [{"칸": name, "값": field["value"], "확신도": field["score"], "상태": field_status(field)}
+                for name, field in sorted(case["extracted"].items(), key=lambda item: review_order(item[1]))]
         edited = st.data_editor(rows, hide_index=True, width="stretch",
-                                disabled=["칸", "확신도"], key=f"editor_{case_id}")
+                                disabled=["칸", "확신도", "상태"], key=f"editor_{case_id}")
         if st.button("수정 반영 후 재검증"):
             new_values = {row["칸"]: row["값"] or "" for row in edited}
             case = apply_edits(conn, case_id, new_values, editor=editor)
